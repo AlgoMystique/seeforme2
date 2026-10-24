@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SeeForMe — visual preview</title>
+<style>
+  *{box-sizing:border-box}body{margin:0;background:#f4f3ed;color:#29312e;font:15px/1.6 -apple-system,BlinkMacSystemFont,sans-serif}header{padding:18px 30px;background:#fffefa;border-bottom:1px solid #e0e4da;display:flex;gap:24px;align-items:center;flex-wrap:wrap}header strong{display:block;font-size:14px}header small{color:#5e6b68;font-size:12px}.states{display:flex;gap:6px;flex-wrap:wrap}.states button{font:12px system-ui;border:1px solid #cfd9cf;border-radius:18px;padding:8px 12px;background:transparent;color:#36544a;cursor:pointer}.states button[aria-pressed=true]{background:#24665f;color:#fffefa;border-color:#24665f}main{max-width:640px;margin:55px auto;padding:0 24px 140px}.eyebrow{font-size:11px;letter-spacing:.15em;color:#52685e}h1{font-size:34px;font-weight:550;letter-spacing:-.05em;line-height:1.15;margin:12px 0}main>p{color:#637168;margin-bottom:28px}.card{background:#fffefa;border:1px solid #dee3d8;border-radius:20px;padding:28px}label{display:block;font-size:12px;font-weight:550;margin-bottom:19px}input,select,textarea{display:block;width:100%;font:15px system-ui;padding:12px;margin-top:6px;border:1px solid #cdd8cc;border-radius:9px;background:#fffefa;color:#29312e}.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card p{font-size:12px;color:#637168;margin:0}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid #24665f;outline-offset:3px}@media(max-width:560px){header{padding:14px 20px}main{margin-top:32px}.card{padding:20px}.two{grid-template-columns:1fr;gap:0}}
+</style>
+</head>
+<body>
+<header><div><strong>SeeForMe · Visual preview</strong><small>Simulated states. No microphone, native connection or form submission.</small></div><nav class="states" aria-label="Preview assistant state"><button data-state="idle" aria-pressed="true">Idle</button><button data-state="listening" aria-pressed="false">Listening</button><button data-state="thinking" aria-pressed="false">Thinking</button><button data-state="speaking" aria-pressed="false">Speaking</button><button data-state="completed" aria-pressed="false">Completed</button></nav></header>
+<main><span class="eyebrow">COMMUNITY / EVERYDAY CONNECTIONS</span><h1>A place at the table.</h1><p>Join the neighbourhood gathering.<br>A simple form, with a little help when you need it.</p>
+<div class="card"><div class="two"><label>First name<input id="first" autocomplete="off" placeholder="Your first name"></label><label>Last name<input id="last" autocomplete="off" placeholder="Your last name"></label></div><label>Email address<input id="email" type="email" autocomplete="off" placeholder="you@example.com"></label><label>How will you join?<select><option>Choose an option</option>In person</option><option>Online</option></select></label><label>Anything we should know?<textarea rows="2" placeholder="Accessibility needs or a question for the hosts"></textarea></label><p>Preview only. These details are never sent anywhere.</p></div></main>
+<script src="../Resources/assistant-ui.js"></script>
+<script src="preview.js"></script>
+</body>
+</html>

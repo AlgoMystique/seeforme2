@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-Hans">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SeeForMe — synthetic multilingual form</title>
+<style>
+body{font:17px/1.6 system-ui;max-width:620px;margin:48px auto;padding:20px;color:#24332f;background:#fafcfb}
+label{display:block;margin-top:24px}input,select{display:block;width:100%;box-sizing:border-box;padding:12px;font:inherit;border:1px solid #a4bcb1;border-radius:8px}
+small{color:#53685e}button{padding:12px 20px;margin-top:24px}nav{display:flex;gap:12px}
+</style>
+<h1>活动报名</h1>
+<p lang="en">Synthetic test only. Speak English to complete this Chinese form, or switch the form to English and use another supported conversation language. Nothing is sent to a server.</p>
+<nav><button type="button" onclick="setLanguage('en')">English form</button><button type="button" onclick="setLanguage('zh-Hans')">中文表格</button></nav>
+<form id="registration">
+<label><span id="name-label">姓名</span><input name="fullName" autocomplete="name" required></label>
+<label><span id="email-label">电子邮箱</span><input name="email" type="email" autocomplete="email" required></label>
+<label><span id="job-label">职业</span><input name="occupation" aria-describedby="job-help" required></label>
+<small id="job-help">请填写您的工作或专业。</small>
+<label><span id="size-label">T恤尺码</span><select name="size" required><option value="">请选择</option><option value="s">小号</option><option value="m">中号</option><option value="l">大号</option></select></label>
+<button id="submit" type="submit">确认报名（测试）</button>
+</form>
+<p id="result" role="status"></p>
+<script>
+const form=document.getElementById('registration');
+form.addEventListener('submit',event=>{event.preventDefault();document.getElementById('result').textContent='Synthetic submission received locally. No data was sent.';});
+function setLanguage(language){
+ document.documentElement.lang=language;
+ const english=language==='en';
+ for(const [id,zh,en]of [['name-label','姓名','Full name'],['email-label','电子邮箱','Email'],['job-label','职业','Occupation'],['job-help','请填写您的工作或专业。','Enter your job or profession.'],['size-label','T恤尺码','T-shirt size'],['submit','确认报名（测试）','Confirm registration (test)']])document.getElementById(id).textContent=english?en:zh;
+ [...form.elements.size.options].forEach((option,i)=>option.textContent=(english?['Choose…','Small','Medium','Large']:['请选择','小号','中号','大号'])[i]);
+}
+</script>
+</html>

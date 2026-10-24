@@ -1,20 +1,37 @@
 {
     "manifest_version": 3,
     "name": "SeeForMe",
-    "description": "Conversational form filling. Reasoning runs on your Mac; SeeForMe never submits forms.",
+    "description": "Conversational form filling. Reasoning runs on your Mac; SeeForMe submits only after you confirm.",
     "version": "1.0",
-
     "background": {
-        "scripts": ["protocol.js", "session.js"],
+        "scripts": [
+            "protocol.js",
+            "session.js",
+            "voice-bridge.js"
+        ],
         "persistent": false
     },
-
-    "content_scripts": [{
-        "js": ["dom.js", "content.js"],
-        "matches": ["https://*/*", "http://localhost/*", "http://127.0.0.1/*"],
-        "run_at": "document_idle",
-        "all_frames": false
-    }],
-
-    "permissions": ["nativeMessaging", "tabs"]
+    "content_scripts": [
+        {
+            "js": [
+                "dom.js",
+                "content.js"
+            ],
+            "matches": [
+                "https://*/*",
+                "http://localhost/*",
+                "http://127.0.0.1/*"
+            ],
+            "run_at": "document_idle",
+            "all_frames": false
+        }
+    ],
+    "permissions": [
+        "nativeMessaging",
+        "tabs",
+        "storage"
+    ],
+    "action": {
+        "default_title": "Start SeeForMe voice conversation"
+    }
 }

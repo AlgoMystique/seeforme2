@@ -4,6 +4,10 @@
   function createEngine(doc, win) {
     const ids = new WeakMap(), elements = new Map(), used = new Set();
     const documentId = win.crypto.randomUUID();
+    const initialURL = win.location.href, initialOrigin = win.location.origin;
+    const nativeCheckValidity = win.HTMLFormElement?.prototype.checkValidity;
+    const nativeRequestSubmit = win.HTMLFormElement?.prototype.requestSubmit;
+    let submissionCandidate = null, reviewedSubmission = null, submitAttempted = false, submitExecuted = false;
     let sequence = 0, revision = 0, snapshotState = null, disposed = false;
     const clean = value => String(value || '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 300);
     function label(el) {
@@ -18,7 +22,7 @@
           el.matches(':disabled') || el.readOnly || el.multiple || el.closest('[inert], [hidden], [aria-hidden="true"]')) return false;
       if (tag === 'input' && !['text', 'email', 'tel', 'url', 'search', 'number', 'date', 'time', 'checkbox', 'radio'].includes(type)) return false;
       const hint = [el.autocomplete, el.name, el.id, label(el)].join(' ');
-      if (/\bcc-|password|passcode|one.time|otp|\bcvv\b|\bcvc\b|credit.?card|card.?number|security.?code|social.?security|\bssn\b|routing|bank.?account|payment/i.test(hint)) return false;
+      if (/\bcc-|password|passcode|one.time|otp|\bcvv\b|\bcvc\b|credit.?card|card.?number|security.?code|social.?security|\bssn\b|routing|bank.?account|payment|captcha|turnstile|\busername\b|webauthn|transaction-(amount|currency)/i.test(hint)) return false;
       const style = win.getComputedStyle(el);
       return style.display !== 'none' && style.visibility !== 'hidden' && style.visibility !== 'collapse' && el.getClientRects().length > 0;
     }
@@ -96,6 +100,20 @@
         r.el.style.outline='3px solid #167580';r.el.style.outlineOffset='3px';
       }
     }
+    // Read only rendered semantic text, never input values or editable content.
+    function pageText() {
+      if (!doc.createTreeWalker || !doc.body) return '';
+      const walker=doc.createTreeWalker(doc.body,4), parts=[];let length=0,node,visited=0;
+      while ((node=walker.nextNode()) && visited++ < 20000 && length < 6000) {
+        const el=node.parentElement;
+        if (!el || el.closest('script,style,noscript,template,input,textarea,select,[contenteditable]:not([contenteditable="false"]),[hidden],[aria-hidden="true"],seeforme-assistant')) continue;
+        if (!el.getClientRects().length || win.getComputedStyle(el).visibility !== 'visible') continue;
+        const text=node.textContent.replace(/\s+/g,' ').trim();
+        if (!text) continue;
+        const part=text.slice(0,6000-length);parts.push(part);length+=part.length+1;
+      }
+      return parts.join('\n').slice(0,6000);
+    }
     function captureProtocol() {
       const context = capture(), fields = [], grouped = new Set();
       wireGroups = new Map();
@@ -110,7 +128,12 @@
         }
         const groupLabel = kind === 'radio-group' ? clean(el.closest('fieldset')?.querySelector('legend')?.textContent || el.getAttribute('aria-label') || el.name) : f.label;
         const out = {id:f.id,label:groupLabel.slice(0,120),kind,required:members.some(r => r.field.required),visible:true,disabled:false,currentValuePresent:members.some(r => r.field.currentValuePresent)};
+        const language=el.closest('[lang]')?.getAttribute('lang');
+        if (language && /^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$/.test(language)) out.language=language.slice(0,40);
         if (f.autocomplete) out.autocomplete=f.autocomplete;
+        const describedBy=(el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean).slice(0,4);
+        const instructions=describedBy.map(id => doc.getElementById?.(id)?.textContent || '').join(' ');
+        if (instructions.trim()) out.instructions=clean(instructions).slice(0,300);
         const placeholder=el.getAttribute('placeholder'); if (placeholder) out.placeholder=clean(placeholder).slice(0,80);
         if (Number.isInteger(el.maxLength) && el.maxLength >= 0) out.maxLength=el.maxLength;
         if (kind === 'select' || kind === 'radio-group') {
@@ -121,7 +144,103 @@
         wireGroups.set(out.id,{members,field:out}); fields.push(out);
         if (fields.length === 150) break;
       }
-      return {context:{documentId:context.documentId,revision:context.revision},snapshot:{pageOrigin:context.pageOrigin,fields}};
+      const target = submissionTarget();
+      submissionCandidate = target.candidate || null;
+      return {context:{documentId:context.documentId,revision:context.revision},snapshot:{pageOrigin:context.pageOrigin,pageText:pageText(),fields,formLanguage:(/^[a-zA-Z]{2,3}(?:-[a-zA-Z0-9]{2,8})*$/.test(doc.documentElement?.getAttribute('lang') || '') ? doc.documentElement.getAttribute('lang') : '').slice(0,40),submitAvailable:!!submissionCandidate && !submitAttempted && !submitExecuted}};
+    }
+    function rendered(el) {
+      if (!el.isConnected || el.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+      const style = win.getComputedStyle(el);
+      if (style.display === 'none' || ['hidden','collapse'].includes(style.visibility) || Number(style.opacity) === 0) return false;
+      for (let parent = el.parentElement; parent; parent = parent.parentElement) if (Number(win.getComputedStyle(parent).opacity) === 0) return false;
+      return Array.from(el.getClientRects()).some(r => r.width > 0 && r.height > 0);
+    }
+    function submissionFingerprint(el) {
+      // Kept in document memory only; never included in a wire message or log.
+      return JSON.stringify({type:el.type,name:el.name,value:el.value,checked:el.checked,
+        label:label(el),text:el.tagName === 'BUTTON' ? clean(el.textContent) : '',
+        disabled:el.disabled || el.matches(':disabled'),visible:rendered(el),
+        attributes:['required','readonly','autocomplete','min','max','step','pattern','minlength','maxlength','aria-required','formaction','formmethod','formenctype','formtarget','formnovalidate'].map(k => el.getAttribute(k)),
+        options:el.tagName === 'SELECT' ? Array.from(el.options).map(o => [o.value,o.disabled,o.parentElement?.disabled]) : undefined});
+    }
+    function submissionTarget() {
+      const fail = errorCode => ({errorCode});
+      if (disposed || win.top !== win || win.document !== doc || win.location.href !== initialURL || win.location.origin !== initialOrigin) return fail('ORIGIN_CHANGED');
+      const members = Array.from(wireGroups.values()).flatMap(g => g.members);
+      const form = members[0]?.el.form;
+      if (!form || !form.isConnected || form.ownerDocument !== doc || members.some(r => !r.el.isConnected || r.el.form !== form)) return fail('FORM_CHANGED');
+      if (!nativeCheckValidity || !nativeRequestSubmit || form.checkValidity !== nativeCheckValidity || form.requestSubmit !== nativeRequestSubmit || form.noValidate || form.method === 'dialog') return fail('OTHER');
+      if (!/^https?:\/\//i.test(form.action)) return fail('OTHER');
+      const protectedRoute = /(?:^|[\/._-])(checkout|payment|login|signin|authenticate)(?:[\/?.#_-]|$)/i;
+      if ([form.action,form.id,form.name].some(value => protectedRoute.test(value || ''))) return fail('OTHER');
+      const controls = Array.from(form.elements);
+      const sensitive = /\bcc-|password|passcode|one.time|\botp\b|\bcvv\b|\bcvc\b|credit.?card|card.?number|security.?code|payment|bank.?account|routing|captcha|turnstile|\busername\b|webauthn|transaction-(amount|currency)/i;
+      const sensitiveControls = [...new Set([...controls,...Array.from(form.querySelectorAll?.('input') || [])])];
+      if (sensitiveControls.some(el => ['password','file'].includes(el.type) || sensitive.test([el.autocomplete,el.name,el.id,label(el)].join(' ')))) return fail('OTHER');
+      if (doc.querySelector?.('[data-sitekey], .g-recaptcha, .h-captcha, .cf-turnstile, iframe[src*="recaptcha"], iframe[src*="hcaptcha"], iframe[src*="challenges.cloudflare.com"]')) return fail('OTHER');
+      // Opaque embedded checkout/auth/challenge controls require manual completion.
+      if (form.querySelector('iframe, object, embed, [data-sitekey], .g-recaptcha, .h-captcha, .cf-turnstile')) return fail('OTHER');
+      const buttons = Array.from(doc.querySelectorAll('button,input')).filter(el => el.form === form && ['submit','image'].includes(el.type) && !el.disabled && !el.matches(':disabled') && rendered(el));
+      if (buttons.length !== 1 || buttons[0].type !== 'submit') return fail('NO_SUBMIT_CONTROL');
+      const control = buttons[0];
+      if (control.ownerDocument !== doc || control.formNoValidate || control.formMethod === 'dialog' || control.getAttribute('aria-disabled') === 'true' || control.onclick || control.getAttribute('onclick')) return fail('OTHER');
+      if (control.getAttribute('formaction') !== null && !/^https?:\/\//i.test(control.formAction)) return fail('OTHER');
+      if (protectedRoute.test(control.formAction || '')) return fail('OTHER');
+      if (/\b(pay|payment|purchase|buy|checkout|charge|authenticate)\b|place.?order|sign.?in|log.?in|confirm.?payment/i.test([label(control),control.textContent,control.value].join(' '))) return fail('OTHER');
+      const route = JSON.stringify([form.action,form.method,form.enctype,form.target,control.formAction,control.formMethod,control.formEnctype,control.formTarget]);
+      return {candidate:{form,control,controls,route,fingerprints:controls.map(submissionFingerprint)}};
+    }
+    function sameSubmission(a,b) {
+      return !!a && !!b && a.form === b.form && a.control === b.control && a.route === b.route && a.controls.length === b.controls.length && a.controls.every((el,i) => el === b.controls[i] && a.fingerprints[i] === b.fingerprints[i]);
+    }
+    function reviewSubmission() {
+      const current = submissionTarget().candidate;
+      reviewedSubmission = !submitAttempted && !submitExecuted && sameSubmission(submissionCandidate,current) ? current : null;
+    }
+    function resetSubmissionReview() { reviewedSubmission = null; }
+    function resetSubmissionSession() {
+      reviewedSubmission = null; submissionCandidate = null; submitAttempted = false;
+      snapshotState = null; wireGroups.clear(); elements.clear(); used.clear();
+    }
+    function submitProtocol(context, authorizationId) {
+      const fail = errorCode => ({success:false,errorCode});
+      if (submitAttempted || submitExecuted || typeof authorizationId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(authorizationId)) return fail('OTHER');
+      submitAttempted = true;
+      if (disposed || win.location.origin !== initialOrigin || win.location.href !== initialURL) return fail('ORIGIN_CHANGED');
+      if (!contextValid(context)) return fail('FORM_CHANGED');
+      let target = submissionTarget();
+      if (!target.candidate) return fail(target.errorCode);
+      if (!sameSubmission(reviewedSubmission,target.candidate) || !sameSubmission(submissionCandidate,target.candidate)) return fail('FORM_CHANGED');
+      const {form,control} = target.candidate;
+      const status = protocolStatus();
+      if (status.missingRequiredFieldIds.length || target.candidate.controls.some(el => el.willValidate !== false && el.validity?.valueMissing)) {
+        highlight(status.missingRequiredFieldIds); return fail('MISSING_REQUIRED');
+      }
+      try {
+        if (!form.checkValidity() || status.validationIssues.length) {
+          highlight(status.validationIssues.map(i => i.fieldId)); return fail('VALIDATION_FAILED');
+        }
+        // checkValidity may run page event handlers. Recheck identities and values
+        // after those handlers and immediately before the native operation.
+        target = submissionTarget();
+        if (!target.candidate) return fail(target.errorCode);
+        if (!contextValid(context) || !sameSubmission(reviewedSubmission,target.candidate)) return fail('FORM_CHANGED');
+        let invalid = false, submitted = false;
+        const onInvalid = event => {if (event.target.form === form) invalid = true;};
+        const onSubmit = event => {if (event.target === form && event.submitter === control) submitted = true;};
+        doc.addEventListener('invalid',onInvalid,true);
+        doc.addEventListener('submit',onSubmit,true);
+        try {
+          submitExecuted = true;
+          // Preserve browser validation, submitter semantics and page submit handlers.
+          // Never call form.submit(), click the control, or synthesize Enter.
+          form.requestSubmit(control);
+        } finally {
+          doc.removeEventListener('invalid',onInvalid,true);
+          doc.removeEventListener('submit',onSubmit,true);
+        }
+        return invalid ? fail('VALIDATION_FAILED') : submitted ? {success:true} : fail('OTHER');
+      } catch (_) { return fail('OTHER'); }
     }
     function protocolStatus() {
       const missingRequiredFieldIds=[], validationIssues=[];
@@ -166,9 +285,9 @@
       }
       return {results,...protocolStatus()};
     }
-    function invalidate() { highlight([]); disposed = true; elements.clear(); used.clear(); snapshotState = null; }
+    function invalidate() { highlight([]); disposed = true; elements.clear(); used.clear(); snapshotState = null; submissionCandidate = null; reviewedSubmission = null; }
     win.addEventListener('pagehide', invalidate);
-    return { capture, fill, captureProtocol, fillProtocol, protocolStatus, highlight, dispose: invalidate };
+    return { capture, fill, captureProtocol, fillProtocol, protocolStatus, highlight, reviewSubmission, resetSubmissionReview, resetSubmissionSession, submitProtocol, dispose: invalidate };
   }
   root.SeeForMeDOM = Object.freeze({ createEngine });
 })(globalThis);

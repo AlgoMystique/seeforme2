@@ -26,7 +26,7 @@
 		000000000000000150000000 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			dstPath = "";
-			dstSubfolderSpec = 13;
+			dstSubfolder = PlugIns;
 			files = (
 				000000000000000180000000 /* SeeForMeExtension.appex in Embed Foundation Extensions */,
 			);
@@ -201,15 +201,22 @@
 		000000000000000250000000 /* Copy Web Extension Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
-			files = (
-			);
-			inputPaths = (
-			);
 			name = "Copy Web Extension Resources";
 			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/content.js",
 			);
 			shellPath = /bin/sh;
-			shellScript = "set -e\nDEST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$DEST\"\ncp \"${PROJECT_DIR}/SeeForMeExtension/manifest.json\" \"$DEST/\"\nfind \"${PROJECT_DIR}/../extension/Resources\" -maxdepth 1 -type f ! -name '.*' -exec cp {} \"$DEST/\" \\;\n";
+			shellScript = (
+				"set -e",
+				"DEST=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"",
+				"mkdir -p \"$DEST\"",
+				"# SEEFORME_WEB_RESOURCES lets a demo build use another copy of the extension scripts (default: repo version).",
+				"WEB=\"${SEEFORME_WEB_RESOURCES:-${PROJECT_DIR}/../extension/Resources}\"",
+				"find \"$WEB\" -maxdepth 1 -type f ! -name '.*' -exec cp {} \"$DEST/\" \\;",
+				"# Native-owned extension scripts (e.g. voice-bridge.js) live next to manifest.json.",
+				"find \"${PROJECT_DIR}/SeeForMeExtension\" -maxdepth 1 -type f -name '*.js' -exec cp {} \"$DEST/\" \\;",
+				"",
+			);
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -382,6 +389,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = SeeForMe;
+				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "SeeForMe listens to your spoken answers so it can fill in web forms for you.";
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
@@ -414,6 +422,7 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = SeeForMe;
+				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "SeeForMe listens to your spoken answers so it can fill in web forms for you.";
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 1.0;
@@ -440,13 +449,19 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "SeeForMeExtension-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "SeeForMe Extension";
-				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks @executable_path/../../../../Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = "-framework SafariServices";
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.seeforme.app.extension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
@@ -467,13 +482,19 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "SeeForMeExtension-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "SeeForMe Extension";
-				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks @executable_path/../../../../Frameworks";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
 				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = "-framework SafariServices";
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				OTHER_LDFLAGS = (
+					"-framework",
+					SafariServices,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.seeforme.app.extension;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;

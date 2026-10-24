@@ -87,6 +87,8 @@ public struct FoundationModelExtractor: FieldExtractor {
                     .map { "\(sanitize($0.value, max: 40))=\(sanitize($0.label, max: 60))" }
                     .joined(separator: ", ")
             }
+            if let language = field.language { line += ", language: " + sanitize(language, max: 40) }
+            if let instructions = field.instructions { line += ", help text: " + sanitize(instructions, max: 300) }
             lines.append(line)
         }
         lines.append("User's latest message: \"\(sanitize(utterance, max: ProtocolLimits.maxUtteranceChars))\"")

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SeeForMe confirmed-submission fixture</title>
+<style>body{font:17px/1.5 system-ui;max-width:640px;margin:40px auto;padding:0 24px}label{display:block;margin:18px 0}input,textarea,button{font:inherit}input:not([type=checkbox]),textarea{display:block;width:100%;box-sizing:border-box;padding:9px}button{padding:9px;margin:6px 0}output{display:block;border:1px solid #24665f;border-radius:8px;padding:16px;margin-top:20px}</style>
+<h1>Confirmed submission test</h1>
+<p>Use synthetic details. This local fixture cancels the submit event: no form data is sent anywhere.</p>
+<form id="registration" method="post">
+<label>Full name <input name="name" autocomplete="name" required></label>
+<label>Email <input type="email" name="email" autocomplete="email" required></label>
+<label>Organisation (optional) <input name="organisation"></label>
+<label>Notes (optional) <textarea name="notes"></textarea></label>
+<button type="submit">Register</button>
+</form>
+<output id="result" aria-live="polite">Waiting for an explicitly authorised submission.</output>
+<p>Expected: complete required fields → answer optional-field questions → review → explicitly answer yes to the native agent’s submit question. The counter should advance exactly once.</p>
+<p>Change a value while the native agent processes confirmation to check that submission is refused. Reload for a fresh attempt.</p>
+<script>
+let submissions=0;
+document.getElementById('registration').addEventListener('submit',event => {
+  event.preventDefault();
+  submissions++;
+  document.getElementById('result').textContent='Submit event observed '+submissions+' time(s). The page handler prevented navigation; no data was sent.';
+});
+</script>
+</html>

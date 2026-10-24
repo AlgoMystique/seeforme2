@@ -3,6 +3,39 @@ import Foundation
 /// Deterministic checks applied to every proposed value, whoever proposed it.
 enum FieldRules {
 
+    static func isName(_ field: FormField) -> Bool {
+        if ["name", "given-name", "family-name", "additional-name"].contains(field.autocomplete ?? "") { return true }
+        return ["name", "姓名", "名字", "姓氏", "nom", "nombre"].contains { field.label.lowercased().contains($0) }
+    }
+
+    /// Short spoken names can be transcribed in an unrelated script. Ask for spelling
+    /// instead of treating that transcription as a verified legal name.
+    static func nameNeedsSpellingConfirmation(_ value: String, conversationLanguage: String) -> Bool {
+        let language = Locale(identifier: conversationLanguage).language.languageCode?.identifier ?? ""
+        let scripts: String
+        switch language {
+        case "zh": scripts = "\\p{Han}\\p{Latin}"
+        case "ja": scripts = "\\p{Han}\\p{Hiragana}\\p{Katakana}\\p{Latin}"
+        case "ko": scripts = "\\p{Hangul}\\p{Han}\\p{Latin}"
+        case "ar": scripts = "\\p{Arabic}\\p{Latin}"
+        case "ru", "uk", "bg": scripts = "\\p{Cyrillic}\\p{Latin}"
+        case "hi": scripts = "\\p{Devanagari}\\p{Latin}"
+        case "el": scripts = "\\p{Greek}\\p{Latin}"
+        case "ta": scripts = "\\p{Tamil}\\p{Latin}"
+        default: scripts = "\\p{Latin}"
+        }
+        let pattern = "^[" + scripts + "\\p{M} .’'\\-]+$"
+        return value.range(of: pattern, options: .regularExpression) == nil
+    }
+
+    static func isIdentity(_ field: FormField) -> Bool {
+        if [.email, .tel, .url].contains(field.kind) { return true }
+        let identity = ["name", "given-name", "family-name", "organization", "street-address", "address-line1", "address-line2", "postal-code", "username"]
+        if identity.contains(field.autocomplete ?? "") { return true }
+        let label = field.label.lowercased()
+        return ["name", "address", "email", "phone", "姓名", "名字", "姓氏", "地址", "nom", "adresse", "nombre", "dirección"].contains { label.contains($0) }
+    }
+
     // MARK: Normalisation
 
     /// Converts a proposed value to the wire format for `field.kind`, or nil if it is not valid for the field.
@@ -38,6 +71,26 @@ enum FieldRules {
         }
         if let result, let max = field.maxLength, max > 0, result.count > max { return nil }
         return result
+    }
+
+    /// Parse explicit spelling, never guess a name from pronunciation.
+    static func spelledName(_ text: String) -> String? {
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        value = value.replacingOccurrences(of: "(?i)^(?:my name is spelled|my name is|it is spelled|it's spelled|spelled|spell it)\\s+", with: "", options: .regularExpression)
+        let letters = value.split { $0.isWhitespace || "-,.".contains($0) }
+        guard (2...40).contains(letters.count), letters.allSatisfy({ $0.count == 1 && $0.first!.isLetter }) else { return nil }
+        return letters.joined().capitalized
+    }
+
+    /// Only explicit punctuation words are converted. Never invent a dot between names.
+    static func spokenEmail(_ text: String) -> String? {
+        var value = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        value = value.replacingOccurrences(of: "^(?:my email address is|my email is|email is|it is|it's)\\s+", with: "", options: .regularExpression)
+        for (word, symbol) in [("at", "@"), ("dot", "."), ("underscore", "_"), ("dash", "-")] {
+            value = value.replacingOccurrences(of: "\\s+" + word + "\\s+", with: symbol, options: .regularExpression)
+        }
+        guard !value.contains(where: \.isWhitespace), value.range(of: "^[a-z0-9._%+\\-]+@[a-z0-9.\\-]+\\.[a-z]{2,}$", options: .regularExpression) != nil else { return nil }
+        return value
     }
 
     static func normalizeEmail(_ value: String) -> String? {
@@ -123,7 +176,7 @@ enum FieldRules {
         switch field.kind {
         case .text, .textarea, .email:
             let valueTokens = tokens(value)
-            return !valueTokens.isEmpty && valueTokens.allSatisfy(saidSet.contains)
+            return !valueTokens.isEmpty && (valueTokens.allSatisfy(saidSet.contains) || (value.unicodeScalars.contains { $0.value > 0x2E80 } && utterance.contains(value)))
         case .url:
             let valueTokens = tokens(value).filter { !["https", "http", "www"].contains($0) }
             return !valueTokens.isEmpty && valueTokens.allSatisfy(saidSet.contains)
@@ -146,6 +199,10 @@ enum FieldRules {
             let labelTokens = tokens(option.label).filter { $0.count >= 2 || $0.allSatisfy(\.isNumber) }
             return labelTokens.contains(where: saidSet.contains) || saidSet.contains(option.value.lowercased())
         case .checkbox:
+            if isTargeted, let reply = ShortReply(utterance) {
+                if value == "true" { return reply == .yes }
+                if value == "false" { return reply == .no }
+            }
             let saysNo = !saidSet.isDisjoint(with: negative)
             let saysYes = !saidSet.isDisjoint(with: affirmative)
             let labelOverlap = tokens(field.label).contains { $0.count >= 4 && !stopwords.contains($0) && saidSet.contains($0) }

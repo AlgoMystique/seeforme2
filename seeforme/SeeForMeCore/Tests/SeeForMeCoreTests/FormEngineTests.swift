@@ -107,7 +107,7 @@ func engine(_ proposals: [Proposal], model: Bool = true) -> FormEngine {
     #expect(first.question?.fieldIds == ["f5"])
     let reply = await e.handle(say("Yes"))
     #expect(reply.actions == [FillAction(fieldId: "f5", value: "true")])
-    #expect(reply.status == .readyForReview)
+    #expect(reply.question == nil) // next step waits for FILL_RESULT
 }
 
 @Test func fillResultCompletesReview() async {
@@ -116,8 +116,8 @@ func engine(_ proposals: [Proposal], model: Bool = true) -> FormEngine {
     let results = ["f0", "f1", "f2", "f4", "f5"].map { FillResultItem(fieldId: $0, success: true) }
     let reply = await e.handle(InboundMessage(type: "FILL_RESULT", sessionId: sessionId, requestId: "r3",
                                               results: results, missingRequiredFieldIds: [], validationIssues: []))
-    #expect(reply.status == .readyForReview)
-    #expect(reply.message?.contains("Company") == true)
+    #expect(reply.status == .needsInput)
+    #expect(reply.question?.text.contains("Company") == true) // optional-field offer
 }
 
 @Test func protocolErrors() async {
@@ -177,4 +177,177 @@ func liveModelMapsExampleAnswer() async {
     #expect(values["f4"] == "m")
     #expect(values["f5"] == nil)
     #expect(values["f3"] == nil)
+}
+
+// MARK: Optional fields and submission
+
+/// Example form with all required fields already filled, so the engine is past the required questions.
+func requiredDone(submitAvailable: Bool = false) -> InboundMessage {
+    var fields = exampleFields
+    for i in [0, 1, 2, 4, 5] { fields[i].currentValuePresent = true }
+    var message = snapshot(fields)
+    message.submitAvailable = submitAvailable
+    return message
+}
+
+@Test func shortReplies() {
+    #expect(ShortReply("Yes please") == .yes)
+    #expect(ShortReply("no thanks") == .no)
+    #expect(ShortReply("No, that's all") == .done)
+    #expect(ShortReply("skip that one") == .skip)
+    #expect(ShortReply("go ahead and submit it") == .yes)
+    #expect(ShortReply("don't submit") == .no)
+    #expect(ShortReply("yes my company is Acme") == nil)
+}
+
+@Test func offersOptionalFieldsThenReviews() async {
+    let e = engine([Proposal(fieldId: "f3", value: "Acme")])
+    let offer = await e.handle(requiredDone())
+    #expect(offer.status == .needsInput)
+    #expect(offer.question?.text.contains("optional") == true)
+    #expect(offer.question?.fieldIds == [])
+
+    let ask = await e.handle(say("yes"))
+    #expect(ask.actions.isEmpty)
+    #expect(ask.question?.fieldIds == ["f3"])
+
+    let filled = await e.handle(say("Acme"))
+    #expect(filled.actions == [FillAction(fieldId: "f3", value: "Acme")])
+    let done = await e.handle(InboundMessage(type: "FILL_RESULT", sessionId: sessionId, requestId: "r4",
+                                             results: [FillResultItem(fieldId: "f3", success: true)], missingRequiredFieldIds: [], validationIssues: []))
+    #expect(done.status == .readyForReview)
+    #expect(done.question == nil) // No submit control reported, so no submit question.
+}
+
+@Test func decliningOptionalGoesToReview() async {
+    let e = engine([Proposal(fieldId: "f3", value: "yes")])
+    _ = await e.handle(requiredDone())
+    let reply = await e.handle(say("No thanks"))
+    #expect(reply.status == .readyForReview)
+    #expect(reply.actions.isEmpty)
+}
+
+@Test func skippingAnOptionalField() async {
+    let e = engine([])
+    _ = await e.handle(requiredDone())
+    _ = await e.handle(say("sure"))
+    let reply = await e.handle(say("skip"))
+    #expect(reply.status == .readyForReview)
+}
+
+@Test func submitOnlyAfterExplicitYes() async {
+    let e = engine([])
+    _ = await e.handle(requiredDone(submitAvailable: true))
+    _ = await e.handle(say("no"))                     // decline optional fields
+    let ask = await e.handle(requiredDone(submitAvailable: true)) // the extension's refresh before the next turn
+    #expect(ask.status == .readyForReview)
+    #expect(ask.question?.text.contains("submit") == true)
+
+    // Anything other than a clear yes does not submit.
+    #expect(await e.handle(say("my company is Acme")).status != .submit)
+    let confirm = await e.handle(say("yes, submit it"))
+    #expect(confirm.status == .submit)
+    #expect(confirm.actions.isEmpty)
+
+    let result = await e.handle(InboundMessage(type: "SUBMIT_RESULT", sessionId: sessionId, requestId: "r9", success: true))
+    #expect(result.status == .ended)
+}
+
+@Test func noSubmitWithoutConfirmationContext() async {
+    let e = engine([])
+    _ = await e.handle(snapshot())                    // required fields still empty
+    #expect(await e.handle(say("yes submit it")).status != .submit)
+    let unexpected = await e.handle(InboundMessage(type: "SUBMIT_RESULT", sessionId: sessionId, requestId: "r9", success: true))
+    #expect(unexpected.errorCode == .badSchema)
+}
+
+@Test func decliningSubmitStopsAtReview() async {
+    let e = engine([])
+    _ = await e.handle(requiredDone(submitAvailable: true))
+    _ = await e.handle(say("no"))
+    let reply = await e.handle(say("no, I'll do it myself"))
+    #expect(reply.status != .submit)
+    let later = await e.handle(requiredDone(submitAvailable: true))
+    #expect(later.status == .readyForReview)
+    #expect(later.question == nil)
+}
+
+@Test func emptyRequiredSelectAsksForOptionsInsteadOfCorrection() async {
+    let e = engine([])
+    _ = await e.handle(snapshot([exampleFields[4]]))
+    let reply = await e.handle(InboundMessage(type: "FILL_RESULT", sessionId: sessionId, requestId: "missing-select",
+        results: [], missingRequiredFieldIds: ["f4"],
+        validationIssues: [ValidationIssue(fieldId: "f4", code: "REQUIRED_MISSING")]))
+    #expect(reply.question?.fieldIds == ["f4"])
+    #expect(reply.question?.text.contains("Small") == true)
+    #expect(reply.question?.text.contains("needs fixing") == false)
+}
+
+@Test func realValidationFailureStillAsksForCorrection() async {
+    let e = engine([])
+    _ = await e.handle(snapshot([exampleFields[2]]))
+    let reply = await e.handle(InboundMessage(type: "FILL_RESULT", sessionId: sessionId, requestId: "invalid-email",
+        results: [], missingRequiredFieldIds: [],
+        validationIssues: [ValidationIssue(fieldId: "f2", code: "TYPE_MISMATCH")]))
+    #expect(reply.question?.fieldIds == ["f2"])
+    #expect(reply.question?.text.contains("needs fixing") == true)
+}
+
+struct PageReasoner: ConversationReasoner {
+    func decide(text: String, fields: [FormField], question: Question?, language: String, formLanguage: String?) async throws -> ConversationDecision { .init(intent: .explain) }
+    func translate(_ text: String, language: String) async throws -> String { text }
+    func explainPage(text: String, page: String, language: String) async throws -> String {
+        #expect(page == "Inscription — Créer un formulaire")
+        #expect(language == "en")
+        return "This page lets you create a registration form."
+    }
+}
+@Test func pageWithoutFieldsCanConverseButNeverSubmit() async {
+    let e = FormEngine(conversation: PageReasoner(), modelAvailable: { true })
+    var page = snapshot([])
+    page.pageText = "Inscription — Créer un formulaire"
+    page.conversationLanguage = "en"
+    page.submitAvailable = true
+    let start = await e.handle(page)
+    #expect(start.status == .needsInput)
+    let reply = await e.handle(say("Explain this website"))
+    #expect(reply.question?.text == "This page lets you create a registration form.")
+    #expect(reply.question?.fieldIds == [])
+    #expect(reply.actions.isEmpty)
+    let yes = await e.handle(say("yes"))
+    #expect(yes.status == .needsInput)
+    #expect(yes.actions.isEmpty)
+}
+@Test func oversizedPageContextIsRejected() async {
+    var page = snapshot([])
+    page.pageText = String(repeating: "x", count: 6001)
+    let reply = await engine([]).handle(page)
+    #expect(reply.status == .error)
+}
+
+@Test func spokenEmailAndSpelledNameFillDirectly() async {
+    for (field, text, expected) in [
+        (exampleFields[2], "alex dot demo at example dot com", "alex.demo@example.com"),
+        (exampleFields[0], "S-A-B-A-B-A", "Sababa"),
+        (exampleFields[0], "Z-E-F-I-R-A", "Zefira")
+    ] {
+        let e = engine([])
+        _ = await e.handle(snapshot([field]))
+        var spoken = say(text); spoken.source = "voice"
+        let preview = await e.handle(spoken)
+        #expect(preview.actions == [FillAction(fieldId: field.id, value: expected)])
+        #expect(preview.status != .submit)
+    }
+    #expect(FieldRules.spokenEmail("alex demo at example.com") == nil)
+    #expect(FieldRules.spelledName("my name is Sarah") == nil)
+}
+
+@Test func voiceEmailInMultipleDetailsFillsDirectly() async {
+    let e = engine([Proposal(fieldId: "f0", value: "Alex"), Proposal(fieldId: "f2", value: "alexdemo@example.com")])
+    _ = await e.handle(snapshot())
+    var spoken = say("My name is Alex and my email is alexdemo@example.com")
+    spoken.source = "voice"
+    let preview = await e.handle(spoken)
+    #expect(preview.actions.contains { $0.fieldId == "f2" && $0.value == "alexdemo@example.com" })
+    #expect(preview.status != .submit)
 }

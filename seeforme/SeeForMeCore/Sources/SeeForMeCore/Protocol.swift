@@ -38,6 +38,8 @@ public struct FormField: Codable, Sendable, Equatable {
     public var autocomplete: String?
     public var placeholder: String?
     public var maxLength: Int?
+    public var language: String?
+    public var instructions: String?
 
     public init(id: String, label: String, kind: FieldKind, required: Bool = false, visible: Bool = true,
                 disabled: Bool = false, currentValuePresent: Bool = false, options: [FieldOption]? = nil,
@@ -82,18 +84,28 @@ public struct InboundMessage: Codable, Sendable {
     public var sessionId: String
     public var requestId: String
     public var pageOrigin: String?
+    public var utteranceId: String?
     public var pageTitle: String?
+    public var pageText: String?
+    public var conversationLanguage: String?
+    public var formLanguage: String?
     public var fields: [FormField]?
     public var text: String?
     public var source: String?
     public var results: [FillResultItem]?
     public var missingRequiredFieldIds: [String]?
     public var validationIssues: [ValidationIssue]?
+    /// FORM_SNAPSHOT: the extension found exactly one submit control it can use.
+    public var submitAvailable: Bool?
+    /// SUBMIT_RESULT
+    public var success: Bool?
+    public var errorCode: String?
 
     public init(v: Int = protocolVersion, type: String, sessionId: String, requestId: String,
                 pageOrigin: String? = nil, fields: [FormField]? = nil, text: String? = nil, source: String? = nil,
                 results: [FillResultItem]? = nil, missingRequiredFieldIds: [String]? = nil,
-                validationIssues: [ValidationIssue]? = nil) {
+                validationIssues: [ValidationIssue]? = nil, submitAvailable: Bool? = nil,
+                success: Bool? = nil, errorCode: String? = nil) {
         self.v = v
         self.type = type
         self.sessionId = sessionId
@@ -105,6 +117,9 @@ public struct InboundMessage: Codable, Sendable {
         self.results = results
         self.missingRequiredFieldIds = missingRequiredFieldIds
         self.validationIssues = validationIssues
+        self.submitAvailable = submitAvailable
+        self.success = success
+        self.errorCode = errorCode
     }
 }
 
@@ -122,6 +137,8 @@ public struct Question: Codable, Sendable, Equatable {
 public enum ReplyStatus: String, Codable, Sendable {
     case needsInput = "needs_input"
     case readyForReview = "ready_for_review"
+    /// The user explicitly confirmed submission; the extension re-checks and submits, then sends SUBMIT_RESULT.
+    case submit
     case ended
     case error
 }
@@ -147,6 +164,7 @@ public struct HostReply: Codable, Sendable {
     public var message: String?
     public var modelAvailable: Bool
     public var errorCode: HostErrorCode?
+    public var conversationLanguage: String?
 
     static func error(_ code: HostErrorCode, sessionId: String, requestId: String, modelAvailable: Bool) -> HostReply {
         HostReply(sessionId: sessionId, requestId: requestId, status: .error, modelAvailable: modelAvailable, errorCode: code)
@@ -164,6 +182,7 @@ public struct HostReply: Codable, Sendable {
 public struct UserInputPush: Codable, Sendable {
     public var v = protocolVersion
     public var type = "USER_INPUT"
+    public var utteranceId: String?
     public var text: String
     public var source: String
 

@@ -1,0 +1,93 @@
+// Reuse the dependency-free DOM fixture and its visual tests.
+load('extension/tests/ui.test.js');
+(async function () {
+  let checks=0;
+  function check(ok,name) {if (!ok) throw Error(name);checks++;}
+  const environment=fixture();environment.ui.dispose();
+  globalThis.document=environment.doc;document.title='Synthetic form';
+  globalThis.window=environment.win;window.top=window;window.addEventListener=() => {};
+  globalThis.location={href:'https://example.test/form'};
+  globalThis.setInterval=() => 1;globalThis.clearInterval=() => {};
+  const calls=[];let captures=0,fillCalls=0,fillPromise,resolveFill,listener;
+  const engine={
+    captureProtocol() {captures++;return {context:{documentId:'test-document',revision:captures},snapshot:{fields:[{id:'email',required:true,visible:true,disabled:false,currentValuePresent:false}]}};},
+    highlight() {}, dispose() {}, reviewSubmission() {}, resetSubmissionReview() {}, resetSubmissionSession() {},
+    submitProtocol(context,id) {check(id === 'native-authorization','submission authorisation passed unchanged');return {success:false,errorCode:'VALIDATION_FAILED'};},
+    protocolStatus:() => ({missingRequiredFieldIds:['email'],validationIssues:[]}),
+    fillProtocol(context,actions) {fillCalls++;check(actions[0].value === 'synthetic@example.test','fill actions passed unchanged');return fillPromise;}
+  };
+  globalThis.SeeForMeDOM={createEngine:() => engine};
+  globalThis.browser={runtime:{id:'test-extension',onMessage:{addListener(fn){listener=fn;}},async sendMessage(message) {
+    if (message.operation === 'preferences') return {};
+    calls.push(message);
+    if (['start','utterance'].includes(message.operation)) listener({channel:'seeforme',documentId:'test-document',operation:'state',state:'needs_input',question:{text:'What is your email?',fieldIds:['email']}},{id:'test-extension'});
+    return {ok:true};
+  }}};
+  load('extension/Resources/content.js');
+  const host=document.body.children.at(-1);
+  function all(node) {return [node,...node.children.flatMap(all)];}
+  const nodes=all(host.shadow), button=label => nodes.find(n => n.getAttribute('aria-label') === label);
+  const input=nodes.find(n => n.tagName === 'textarea');
+  await button('Help me fill this form').listeners.click[0]();
+  check(calls.length === 1 && calls[0].operation === 'start' && captures === 1,'start uses exactly one original capture and message');
+  check(calls[0].snapshot.pageTitle === 'Synthetic form','existing snapshot title preserved');
+  check(!button('Send answer').disabled,'host state enables original send control');
+  const assistantPanel=nodes.find(n => n.className === 'assistant'), question=nodes.find(n => n.className === 'question');
+  const beforeVoiceCalls=calls.length, beforeVoiceCaptures=captures, originalQuestion=question.textContent;
+  input.value='preserved draft';
+  const voiceEnvelope={channel:'seeforme',documentId:'test-document',operation:'voice-state',voiceRouteId:'route-one',voiceRevision:1,voiceExpiresAt:Date.now()+15000,voice:{v:1,type:'VOICE_STATE',state:'listening',speechDetected:true,instanceId:'00000000-0000-4000-8000-000000000001',seq:1,ttlMs:15000}};
+  listener(voiceEnvelope,{id:'foreign-extension'});check(assistantPanel.dataset.avatar !== 'listening','foreign voice update rejected');
+  listener(voiceEnvelope,{id:'test-extension'});check(assistantPanel.dataset.avatar === 'listening' && assistantPanel.dataset.speech === 'true','native voice event reaches live content UI');
+  listener({...voiceEnvelope,voiceRevision:0,voice:{...voiceEnvelope.voice,state:'speaking',seq:2}},{id:'test-extension'});check(assistantPanel.dataset.avatar === 'listening','late display message ignored');
+  listener({...voiceEnvelope,voiceRevision:2,voice:{...voiceEnvelope.voice,state:'speaking',speechDetected:undefined,seq:2}},{id:'test-extension'});check(assistantPanel.dataset.avatar === 'speaking','speaking state reflects real push');
+  listener({...voiceEnvelope,voiceRouteId:'route-two',voiceRevision:0,voice:{...voiceEnvelope.voice,state:'thinking',speechDetected:undefined,seq:3}},{id:'test-extension'});check(assistantPanel.dataset.avatar === 'thinking','background restart can resume native voice display');
+  listener({...voiceEnvelope,voiceRevision:999,voice:{...voiceEnvelope.voice,state:'speaking',seq:999}},{id:'test-extension'});check(assistantPanel.dataset.avatar === 'thinking','retired background route cannot overwrite current state');
+  listener({channel:'seeforme',documentId:'test-document',operation:'voice-idle',voiceRouteId:'route-two',voiceRevision:1},{id:'test-extension'});check(assistantPanel.dataset.avatar === 'idle','expired or inactive-tab display clears');
+  check(calls.length === beforeVoiceCalls && captures === beforeVoiceCaptures && question.textContent === originalQuestion && input.value === 'preserved draft','voice display does not send requests, inspect fields, change questions or lose drafts');
+  check(!nodes.find(n => n.className === 'microphone').disabled,'microphone uses documented native bridge');
+  listener({channel:'seeforme',documentId:'test-document',operation:'state',state:'processing'},{id:'test-extension'});
+  check(nodes.find(n => n.className === 'microphone').disabled,'Talk disabled while form request is processing');
+  listener({channel:'seeforme',documentId:'test-document',operation:'state',state:'needs_input'},{id:'test-extension'});
+  input.value='synthetic@example.test';
+  await button('Send answer').listeners.click[0]();
+  check(calls.length === 2 && calls[1].operation === 'utterance' && calls[1].text === 'synthetic@example.test','typed answer uses original message path');
+  check(input.value === '' && captures === 1,'successful send clears input without new extraction');
+  fillPromise=new Promise(resolve => resolveFill=resolve);
+  const returned=listener({channel:'seeforme',documentId:'test-document',operation:'fill',context:{revision:1},actions:[{fieldId:'email',value:'synthetic@example.test'}]},{id:'test-extension'});
+  check(returned === fillPromise && fillCalls === 1,'visual observer preserves fill promise and call count');
+  const result={results:[{fieldId:'email',success:true}],missingRequiredFieldIds:[],validationIssues:[]};resolveFill(result);
+  check(await returned === result,'original fill result identity preserved');await Promise.resolve();
+  check(nodes.find(n => n.className === 'fill-note').textContent === '1 field updated and checked','fill result reaches visual feedback');
+  const submission=await listener({channel:'seeforme',documentId:'test-document',operation:'submit',context:{revision:1},authorizationId:'native-authorization'},{id:'test-extension'});
+  check(submission.success === false && submission.errorCode === 'VALIDATION_FAILED','content returns submission result unchanged');
+  const status=await listener({channel:'seeforme',documentId:'test-document',operation:'status'},{id:'test-extension'});
+  check(status.missingRequiredFieldIds[0] === 'email' && captures === 2,'status retains original capture and return value');
+  listener({channel:'seeforme',documentId:'test-document',operation:'state',state:'ready_for_review'},{id:'foreign-extension'});
+  check(nodes.find(n => n.className === 'assistant').dataset.state === 'needs_input','sender gate still rejects foreign state');
+  await button('Start over').listeners.click[0]();
+  check(calls.length === 3 && calls[2].operation === 'reset','reset uses exactly original message');
+  check(button('Send answer').disabled && input.value === '','reset keeps original control behavior');
+  check(!button('Help me fill this form').hidden,'reset restores start UI');
+  const beforeStart=calls.length;
+  nodes.find(n => n.className === 'microphone').listeners.click[0]();
+  for (let i=0;i<12;i++) await Promise.resolve();
+  check(calls[beforeStart].channel === 'seeforme' && calls[beforeStart].operation === 'start','mic inspects first');
+  check(calls[beforeStart+1].channel === 'seeforme-voice' && calls[beforeStart+1].operation === 'start','mic starts native voice after inspection');
+  check(assistantPanel.dataset.avatar === 'idle','acknowledgement does not simulate listening');
+  listener({...voiceEnvelope,voiceRouteId:'route-two',voiceRevision:2,voice:{...voiceEnvelope.voice,seq:4,level:.8,muted:false}},{id:'test-extension'});
+  check(!nodes.find(n => n.className === 'call-bar').hidden,'real voice reveals call bar');
+  listener({channel:'seeforme',documentId:'test-document',operation:'state',state:'processing'},{id:'test-extension'});
+  check(!button('End conversation').disabled,'active voice can still stop during form processing');
+  await button('Mute spoken replies').listeners.click[0]();
+  check(calls[calls.length-1].operation === 'mute','speaker sends documented mute');
+  await button('End conversation').listeners.click[0]();
+  check(calls[calls.length-1].operation === 'stop','hangup sends documented stop');
+  engine.captureProtocol=() => ({context:{documentId:'test-document',revision:100},snapshot:{fields:[],pageText:'Créer un formulaire'}});
+  await button('Start over').listeners.click[0]();
+  const noFormStart=calls.length;
+  nodes.find(n => n.className === 'microphone').listeners.click[0]();
+  for(let i=0;i<20;i++) await Promise.resolve();
+  check(calls.slice(noFormStart).some(c => c.channel === 'seeforme' && c.operation === 'start' && c.snapshot.fields.length === 0),'page without fields starts a session');
+  check(calls.slice(noFormStart).some(c => c.channel === 'seeforme-voice' && c.operation === 'start'),'page without fields starts real native voice');
+  print('PASS '+checks+' content/UI integration assertions');
+})().catch(e => {print('FAIL '+e.message);quit(1);});

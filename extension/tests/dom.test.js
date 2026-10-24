@@ -16,13 +16,24 @@ class Input {
 }
 const checked = new WeakMap();
 Object.defineProperty(Input.prototype, 'checked', {get() {return checked.get(this) || false;}, set(v) {checked.set(this, v);}});
-function fixture(fields) {
+function fixture(fields, extra={}) {
   const listeners = {};
   const win = {crypto: {randomUUID: () => 'document'}, location: {href:'https://example.test/form', origin:'https://example.test'}, getComputedStyle: () => ({display:'block', visibility:'visible'}), HTMLInputElement: Input, HTMLSelectElement: Input, HTMLTextAreaElement: Input, Event: class {constructor(type) {this.type = type;}}, setTimeout: f => f(), addEventListener: (n,f) => listeners[n] = f};
-  const doc = {querySelectorAll: () => fields, getElementById: () => null};
+  const doc = {querySelectorAll: () => fields, getElementById: () => null,...extra};
   return {engine: SeeForMeDOM.createEngine(doc,win), win, listeners};
 }
 (async function () {
+  const nodes=[
+    {textContent:'Créer un formulaire',parentElement:{closest:()=>null,getClientRects:()=>[{}]}},
+    {textContent:'private input',parentElement:{closest:()=>({}),getClientRects:()=>[{}]}},
+    {textContent:'hidden text',parentElement:{closest:()=>null,getClientRects:()=>[]}},
+    {textContent:'x'.repeat(7000),parentElement:{closest:()=>null,getClientRects:()=>[{}]}}
+  ];
+  const page=fixture([],{body:{},createTreeWalker(){let i=0;return {nextNode:()=>nodes[i++]};}});
+  const pageSnapshot=page.engine.captureProtocol().snapshot;
+  assert(pageSnapshot.pageText.startsWith('Créer un formulaire'),'visible multilingual page text extracted');
+  assert(!pageSnapshot.pageText.includes('private input') && !pageSnapshot.pageText.includes('hidden text'),'editable and hidden text excluded');
+  assert(pageSnapshot.pageText.length === 6000,'page text bounded');
   const text = new Input(), password = new Input('password'), payment = new Input(); payment.autocomplete = 'cc-number';
   const f = fixture([text,password,payment]);
   let snap = f.engine.capture();

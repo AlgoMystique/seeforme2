@@ -5,6 +5,11 @@ import Foundation
 /// One user answer produces several replies: a FORM_SNAPSHOT refresh, the USER_UTTERANCE reply
 /// with actions, then the FILL_RESULT reply with the next question. Only the last one is spoken.
 public enum VoiceTurn {
+    public static func endsTask(_ reply: HostReplyBroadcast.Summary) -> Bool {
+        guard ["USER_UTTERANCE", "FILL_RESULT", "FORM_STATUS", "SUBMIT_RESULT"].contains(reply.requestType ?? ""), reply.filledCount == 0 else { return false }
+        return reply.status == .ended || (reply.status == .readyForReview && reply.question == nil)
+    }
+
     public struct Speech: Equatable, Sendable {
         public var text: String
         public var question: String?

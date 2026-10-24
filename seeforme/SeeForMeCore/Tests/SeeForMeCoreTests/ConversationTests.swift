@@ -224,4 +224,11 @@ func liveExplanationStreamsOrFallsBackWithoutDuplicateText() async throws {
     #expect(collected.chunks.map { $0.0 }.joined() == answer)
 }
 
+@Test(.enabled(if: FoundationModelExtractor.isAvailable))
+func liveUnsupportedActionIsNotAFormAnswer() async throws {
+    let result = try await LocalConversationReasoner().decide(text: "Open a template for me", fields: [FormField(id: "name", label: "Name", kind: .text)], question: nil, language: "en", formLanguage: "en")
+    #expect(result.intent == .unsupported)
+    #expect(result.values.isEmpty)
+}
+
 }

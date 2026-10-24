@@ -315,7 +315,7 @@ struct PageReasoner: ConversationReasoner {
     #expect(reply.question?.fieldIds == [])
     #expect(reply.actions.isEmpty)
     let yes = await e.handle(say("yes"))
-    #expect(yes.status == .needsInput)
+    #expect(yes.status == .ended)
     #expect(yes.actions.isEmpty)
 }
 @Test func oversizedPageContextIsRejected() async {
@@ -350,4 +350,13 @@ struct PageReasoner: ConversationReasoner {
     let preview = await e.handle(spoken)
     #expect(preview.actions.contains { $0.fieldId == "f2" && $0.value == "alexdemo@example.com" })
     #expect(preview.status != .submit)
+}
+
+@Test func unsupportedActionsAreExplainedWithoutFilling() async {
+    let e = FormEngine(conversation: StubConversation(decision: .init(intent: .unsupported)), modelAvailable: { true })
+    _ = await e.handle(snapshot())
+    let reply = await e.handle(say("Open a template for me"))
+    #expect(reply.actions.isEmpty)
+    #expect(reply.question?.text.contains("not authorised") == true)
+    #expect(reply.status != .submit)
 }

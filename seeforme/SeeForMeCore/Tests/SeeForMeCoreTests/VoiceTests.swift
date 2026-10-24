@@ -80,3 +80,13 @@ func summary(_ type: String, _ status: ReplyStatus = .needsInput, question: Stri
     #expect(audio.prefix(2) == Data([0x70, 0x17])) // The first spoken sample survives detection.
     #expect(!segmenter.confirmedSpeech)
 }
+
+@Test func autoEndOnlyAfterCompletedTask() {
+    #expect(VoiceTurn.endsTask(summary("USER_UTTERANCE", .ended, question: "Here is the explanation.")))
+    #expect(VoiceTurn.endsTask(summary("FILL_RESULT", .readyForReview)))
+    #expect(VoiceTurn.endsTask(summary("SUBMIT_RESULT", .ended)))
+    #expect(!VoiceTurn.endsTask(summary("FILL_RESULT", .readyForReview, question: "Submit now?")))
+    #expect(!VoiceTurn.endsTask(summary("USER_UTTERANCE", .needsInput, question: "Your email?")))
+    #expect(!VoiceTurn.endsTask(summary("USER_UTTERANCE", .needsInput, filled: 1)))
+    #expect(!VoiceTurn.endsTask(summary("USER_UTTERANCE", .error)))
+}

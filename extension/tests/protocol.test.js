@@ -56,6 +56,8 @@ function event() {return {addListener(f){this.fn=f;},removeListener(){}};}
   const session=SeeForMeSession.start(browser,{randomUUID:() => '00000000-0000-4000-8000-'+String(sequence++).padStart(12,'0')},clock);
   const sender={id:'extension',frameId:0,tab:{id:1,url:'https://example.test/form'},url:'https://example.test/form'};
   const listener=browser.runtime.onMessage.fn;
+  assert(listener({channel:'seeforme-voice',operation:'auto-start'},sender) === undefined,'form listener does not claim automatic voice response');
+  assert(listener({channel:'seeforme-voice',operation:'start'},sender) === undefined,'form listener leaves manual voice acknowledgement to voice bridge');
   await listener({channel:'seeforme',operation:'start',documentId:id,context,snapshot:{...liveSnapshot,pageOrigin:'https://forged.test'}},sender);
   assert(requests[0].pageOrigin === 'https://example.test','origin from browser sender');
   await listener({channel:'seeforme',operation:'utterance',documentId:id,text:'My email is demo@example.test'},sender);

@@ -2,6 +2,8 @@
 (function () {
   'use strict';
   if (typeof browser === 'undefined') return;
+  const automaticTabs=new Set();
+  browser.tabs.onRemoved?.addListener(id=>automaticTabs.delete(id));
   const commands={start:'VOICE_START',stop:'VOICE_STOP',mute:'VOICE_MUTE',unmute:'VOICE_UNMUTE'};
   async function preferences() {
     const saved=await browser.storage.local.get('voicePreferences');
@@ -31,6 +33,14 @@
   });
   browser.runtime.onMessage.addListener((msg,sender) => {
     if (!msg || msg.channel !== 'seeforme-voice' || sender.id !== browser.runtime.id) return;
+    if (msg.operation === 'auto-start') return (async () => {
+      const id=sender.tab?.id;
+      if (!Number.isInteger(id) || sender.frameId !== 0 || automaticTabs.has(id)) return {start:false};
+      const [active]=await browser.tabs.query({active:true,currentWindow:true});
+      if (active?.id !== id || automaticTabs.has(id)) return {start:false};
+      automaticTabs.add(id);
+      return {start:true};
+    })();
     if (msg.operation === 'preferences') return preferences();
     if (msg.operation === 'options') return native('VOICE_OPTIONS');
     if (msg.operation === 'save-preferences') return (async () => {
@@ -48,6 +58,7 @@
     })();
     const type=Object.prototype.hasOwnProperty.call(commands,msg.operation) ? commands[msg.operation] : null;
     if (type) {
+      if (type === 'VOICE_START' && Number.isInteger(sender.tab?.id)) automaticTabs.add(sender.tab.id);
       const extra={};
       if (type === 'VOICE_START' && typeof msg.conversationLanguage === 'string') extra.conversationLanguage=msg.conversationLanguage;
       return send(type,extra);

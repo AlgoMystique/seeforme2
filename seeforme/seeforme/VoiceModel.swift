@@ -90,6 +90,7 @@ final class VoiceModel {
     @ObservationIgnored private var lastQuestion: String?
     @ObservationIgnored private var awaitingReply = false
     @ObservationIgnored private var saying = false
+    @ObservationIgnored private var stopAfterSpeech = false
     /// A question that became ready while SeeForMe was still talking (e.g. during the greeting).
     @ObservationIgnored private var pendingSpeech: VoiceTurn.Speech?
     @ObservationIgnored private var streamedSpeech: [VoiceTurn.Speech] = []
@@ -168,7 +169,7 @@ final class VoiceModel {
 
     func stop() {
         timeout?.cancel()
-        voiceEpoch = UUID(); saying = false
+        voiceEpoch = UUID(); saying = false; stopAfterSpeech = false
         utteranceId = nil; streamedSpeech = []; streamedSequence = -1; streamComplete = false
         player.stop()
         recorder?.stop()
@@ -228,9 +229,11 @@ final class VoiceModel {
             } else if streamComplete, !saying { listen() }
             return
         }
+        if VoiceTurn.endsTask(reply) { stopAfterSpeech = true }
         if reply.requestType == "USER_UTTERANCE", reply.utteranceId == utteranceId, streamedSequence >= 0 {
             if streamComplete {
                 lastQuestion = reply.question
+                if stopAfterSpeech && !saying && streamedSpeech.isEmpty { stop() }
                 return note("skip:alreadyStreamed")
             }
             // Generation failed after a partial sentence. Stop that stream and speak the final recovery reply.
@@ -238,11 +241,12 @@ final class VoiceModel {
         }
         if reply.requestType == "SESSION_RESET" {
             lastQuestion = nil; utteranceId = nil; streamedSpeech = []; streamedSequence = -1; streamComplete = true
-            voiceEpoch = UUID(); saying = false; pendingSpeech = nil; awaitingReply = false; timeout?.cancel(); player.stop()
+            voiceEpoch = UUID(); saying = false; stopAfterSpeech = false; pendingSpeech = nil; awaitingReply = false; timeout?.cancel(); player.stop()
             listen()
             return
         }
         guard let speech = VoiceTurn.speech(for: reply, awaitingReply: awaitingReply, lastQuestion: lastQuestion) else {
+            if stopAfterSpeech && !saying { stop() }
             return note("skip:turnNotFinished")
         }
         if saying, !awaitingReply {
@@ -267,7 +271,7 @@ final class VoiceModel {
     private func speechStarted() {
         if state == .speaking || state == .preparingSpeech || (state == .thinking && streamedSequence >= 0) {
             // Retain the recorder's pre-roll and current utterance; do not reset it.
-            voiceEpoch = UUID(); saying = false; utteranceId = nil
+            voiceEpoch = UUID(); saying = false; stopAfterSpeech = false; utteranceId = nil
             streamedSpeech = []; pendingSpeech = nil; streamedSequence = -1; streamComplete = true
             awaitingReply = false; timeout?.cancel(); player.stop()
             state = .hearing
@@ -327,6 +331,7 @@ final class VoiceModel {
         guard !muted else {
             Diagnostics.record("voice.tts", ["skipped": "muted"])
             if streamedSequence >= 0 && !streamComplete { state = .thinking; return }
+            if stopAfterSpeech { stop(); return }
             return listen()
         }
         record { $0.addSpeech(speech.text) }
@@ -356,7 +361,7 @@ final class VoiceModel {
             saying = false
             return await say(next)
         }
-        listen()
+        if stopAfterSpeech { stop() } else { listen() }
     }
 
     // MARK: Usage

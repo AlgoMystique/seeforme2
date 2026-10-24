@@ -257,3 +257,11 @@ Safari's persistent “Thinking” was caused by a native playback callback cras
 Live user-assisted comparison on this Mac showed processed input delivered buffers but zero signal and no utterances. Explicit `AVAudioConverter.channelMap = [0]` restored the microphone channel: the repeat test detected two utterances with processing enabled, and two with processing disabled. No audio was retained or transcribed by this diagnostic. Safari DOM automation on a fresh synthetic test form also verified name/email filling and email readback; this is a DOM test, not a claim of full voice-flow verification.
 
 Live Safari follow-up after installing channel mapping: diagnostics showed speech → transcription → USER_UTTERANCE actions → FILL_RESULT → streamed playback completion. DOM inspection returned filled=true for name and email without exposing values. One native turn took about 1.4 seconds and first audio followed in about 250 ms. This verifies the previously stalled listening path in the user's Safari session; it does not independently verify the correctness of personal field values.
+
+### Demo lifecycle optimizations (revision 1.9)
+
+The assistant automatically inspects and starts voice once when first loaded in an active tab. Background tabs do not activate voice; reload/completion does not repeatedly reopen it. Talk remains available for another task. Unsupported website actions receive a localized capability reply without actions. Completed explanations, successful submissions, and final review without a pending question stop voice after playback; submission confirmation still keeps the session open.
+
+Validation: 415 JavaScript assertions and 58 native tests passed, including actual Foundation Models unsupported-action classification and the existing multilingual explanation tests. Audio capture/channel mapping, playback and form-filling code remain at the user-confirmed working baseline.
+
+Automatic-start messaging fix: the form background listener now returns synchronously for other channels. Previously its empty async Promise could claim the reply intended for the voice bridge, so a granted automatic start was never observed by the content script. Regression checks cover both automatic and manual voice message response ownership. 417 JavaScript assertions passed; no native audio or form logic changed.

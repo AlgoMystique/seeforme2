@@ -228,14 +228,21 @@ public actor FormEngine {
 
     private func utterance(_ text: String, session: inout Session, message: InboundMessage) async -> HostReply {
         if session.fields.isEmpty {
+            var completed = false
             var answer = "I couldn't read enough page text to explain it. Try a page with visible text."
             if !session.pageText.isEmpty, let conversation, modelAvailable() {
-                do { answer = try await pageExplanation(text: text, session: session, message: message, using: conversation) }
+                do {
+                    let intent = try await conversation.decide(text: text, fields: [], question: nil, language: session.language, formLanguage: session.formLanguage)
+                    if intent.intent == .unsupported {
+                        answer = "Sorry, I am not authorised to do that yet. I can explain this page and help fill supported forms."
+                    } else { answer = try await pageExplanation(text: text, session: session, message: message, using: conversation) }
+                    completed = true
+                }
                 catch { answer = "Page explanation is temporarily unavailable. Please try again." }
             }
             session.prompt = .none
             session.question = Question(text: answer, fieldIds: [])
-            return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
+            return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: completed ? .ended : .needsInput,
                              question: session.question, modelAvailable: modelAvailable())
         }
         // Short replies ("yes", "no", "skip", "that's all") answer the last question; they never fill fields here.
@@ -332,6 +339,11 @@ public actor FormEngine {
                     return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
                                      question: session.question, modelAvailable: true)
                 }
+                if decision.intent == .unsupported {
+                    session.prompt = .none
+                    return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
+                        question: Question(text: "Sorry, I am not authorised to do that yet. I can explain this page and help fill supported forms.", fieldIds: []), modelAvailable: true)
+                }
                 if decision.intent == .language {
                     if let language = decision.language, ConversationLanguage.supported(language) {
                         session.language = language
@@ -343,7 +355,7 @@ public actor FormEngine {
                     if !session.pageText.isEmpty {
                         let explanation = try await pageExplanation(text: text, session: session, message: message, using: conversation)
                         return HostReply(sessionId: message.sessionId, requestId: message.requestId,
-                            status: .needsInput, question: Question(text: explanation, fieldIds: []), modelAvailable: true)
+                            status: .ended, question: Question(text: explanation, fieldIds: []), modelAvailable: true)
                     }
                     return HostReply(sessionId: message.sessionId, requestId: message.requestId,
                                      status: session.prompt == .submitConfirm ? .readyForReview : .needsInput,

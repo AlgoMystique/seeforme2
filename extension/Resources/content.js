@@ -501,4 +501,14 @@ const callBar=el('div','call-bar'), speaker=button('call-control','Mute spoken r
     state({state:'ended',message:'Page restored. Inspect the form to continue.'});
     timer=setInterval(() => {if (location.href !== lastUrl) {lastUrl=location.href;void request({operation:'reset'});present('clearVoiceState',true);engine.dispose();engine=SeeForMeDOM.createEngine(document,window);started=false;documentId=undefined;state({state:'ended',message:'Page changed. Inspect the new form to continue.'});}},500);
   });
+  // One automatic start per active tab; completion/hang-up never loops into a restart.
+  async function automaticStart() {
+    if (document.visibilityState !== 'visible' || started || busy) return;
+    try {
+      const result=await browser.runtime.sendMessage({channel:'seeforme-voice',operation:'auto-start'});
+      if (result?.start && !started && !busy) {present('setVoicePending','start');await voiceAction('start');}
+    } catch (_) { present('voiceControlFailed'); }
+  }
+  window.setTimeout(automaticStart,500);
+  document.addEventListener('visibilitychange',automaticStart);
 })();

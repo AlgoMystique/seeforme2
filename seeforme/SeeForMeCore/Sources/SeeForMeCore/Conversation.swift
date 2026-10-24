@@ -30,7 +30,7 @@ public enum ConversationLanguage {
 }
 
 public struct ConversationDecision: Sendable {
-    public enum Intent: String, Sendable { case answer, explain, help, language }
+    public enum Intent: String, Sendable { case answer, explain, help, language, unsupported }
     public var intent: Intent
     public var explanation: String
     public var language: String?
@@ -82,10 +82,10 @@ private struct PlannedValue {
     var value: String
 }
 @Generable
-private enum PlannedIntent { case answer, explain, help, language }
+private enum PlannedIntent { case answer, explain, help, language, unsupported }
 @Generable
 private struct ConversationPlan {
-    @Guide(description: "answer, explain, help, or language. Questions asking what something means are explain, never answer.")
+    @Guide(description: "answer, explain, help, language, or unsupported. Questions asking what something means are explain, never answer.")
     var intent: PlannedIntent
     @Guide(description: "For answer intent leave this empty. Otherwise explain briefly in the conversation language. Never expose field IDs, internal reasoning or unrelated option metadata.")
     var explanation: String
@@ -206,6 +206,8 @@ public struct LocalConversationReasoner: ConversationReasoner {
         explain: the user asks what a field or option means.
         help: the user requests assistance with the form without providing details.
         language: the user explicitly asks to change conversation language.
+        unsupported: the user asks you to open a template, click a link, navigate, download, purchase, or perform an action other than inspecting/explaining this page or filling its form.
+        Classify action requests as unsupported even if they also mention a form. Never claim to perform them.
         A declarative statement giving an occupation, name or email is answer, even in another language.
         Requests for help or explanation must never be filled into fields.
         Explain the supplied form briefly, or answer the user's question based only on supplied metadata.
@@ -232,7 +234,7 @@ public struct LocalConversationReasoner: ConversationReasoner {
         let response = try await session.respond(to: prompt, generating: ConversationPlan.self,
                                                 options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 1000))
         let p = response.content
-        let intent: ConversationDecision.Intent = switch p.intent { case .answer: .answer; case .explain: .explain; case .help: .help; case .language: .language }
+        let intent: ConversationDecision.Intent = switch p.intent { case .answer: .answer; case .explain: .explain; case .help: .help; case .language: .language; case .unsupported: .unsupported }
         var values: [ConversationValue] = []
         var rejections: [String] = p.values.isEmpty ? ["NO_PROPOSALS"] : []
         if intent == .answer {

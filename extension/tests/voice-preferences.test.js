@@ -6,7 +6,7 @@
   globalThis.browser={
     storage:{local:{get:async()=>({voicePreferences:stored}),set:async x=>{stored=x.voicePreferences;}}},
     action:{onClicked:{addListener(fn){toolbar=fn;}},setBadgeText:async()=>{}},
-    tabs:{sendMessage:async(id,msg)=>{tabMessages.push({id,...msg});}},
+    tabs:{query:async()=>[{id:5}],onRemoved:{addListener(){}},sendMessage:async(id,msg)=>{tabMessages.push({id,...msg});}},
     runtime:{id:'extension',onMessage:{addListener(fn){listener=fn;}},sendNativeMessage:async(app,req)=>{
       requests.push(req);
       if(req.type==='VOICE_OPTIONS')return {v:1,type:'VOICE_OPTIONS',requestId:req.requestId,systemLanguage:'fr-FR',languages:[{id:'fr',name:'French'},{id:'en',name:'English'}],voices:[{id:'voice-one',name:'One'}]};
@@ -34,5 +34,9 @@
   check(tabMessages.at(-1).operation==='toolbar-start','toolbar starts through page inspection');
   await call('save-preferences',{conversationLanguage:'',voiceId:'voice-one'});
   check(!('conversationLanguage' in stored),'Mac default remains an omitted override');
+  const auto=(id)=>listener({channel:'seeforme-voice',operation:'auto-start'},{id:'extension',frameId:0,tab:{id}});
+  check(!(await auto(6)).start,'background tab cannot auto-start voice');
+  check((await auto(5)).start,'active tab receives one automatic start');
+  check(!(await auto(5)).start,'completion or reload cannot repeatedly auto-start');
   print('PASS '+count+' voice preference assertions');
 })().catch(e=>{print('FAIL '+e.message);quit(1);});

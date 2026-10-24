@@ -212,7 +212,12 @@
         port.onDisconnect.addListener(() => {port=null;lastVoice=null;if (voiceTimer !== undefined) clock.clearTimeout(voiceTimer);void routeVoice();});
       } catch (_) {port=null;}
     }
-    const onMessage=(msg,sender) => {connect(); return listener(msg,sender);};
+    const onMessage=(msg,sender) => {
+      // Returning even an empty Promise claims the response in Safari. Leave
+      // voice messages entirely to voice-bridge.js.
+      if (msg?.channel !== 'seeforme') return;
+      connect(); return listener(msg,sender);
+    };
     const updated=(id,info) => {if (info.url || info.status === 'loading') void reset(id);};
     const removed=id => {void reset(id);};
     browser.runtime.onMessage.addListener(onMessage);

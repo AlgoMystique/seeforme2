@@ -1,0 +1,69 @@
+// Minimal URL implementation for JavaScriptCore CLI only, not shipped resources.
+globalThis.URL=class {constructor(s) {const m=/^(https?):\/\/([^/:?#]+)(:\d+)?(\/[^?#]*)?/.exec(s);if (!m) throw Error('url');this.protocol=m[1]+':';this.hostname=m[2];this.origin=m[1]+'://'+m[2]+(m[3] || '');}};
+load('extension/Resources/protocol.js');
+load('extension/Resources/session.js');
+let count=0;function assert(v,n) {if (!v) throw Error(n);count++;}
+const id='00000000-0000-4000-8000-000000000001', next='00000000-0000-4000-8000-000000000002';
+const P=SeeForMeProtocol;
+const field={id:'f1',label:'Email',kind:'email',required:true,visible:true,disabled:false,currentValuePresent:false};
+const base={v:1,sessionId:id,requestId:next};
+const snapshot={...base,type:'FORM_SNAPSHOT',pageOrigin:'https://example.test',fields:[field]};
+assert(P.request(snapshot),'valid snapshot');
+assert(!P.request({...snapshot,pageOrigin:'http://example.test'}),'remote http denied');
+assert(P.request({...snapshot,pageOrigin:'http://localhost:8000'}),'local test origin');
+assert(!P.request({...snapshot,fields:[field,field]}),'duplicate ids');
+assert(!P.request({...snapshot,fields:[{...field,kind:'password'}]}),'unsupported kind');
+assert(!P.request({...snapshot,fields:[{...field,label:'x'.repeat(121)}]}),'label bounded');
+assert(!P.request({...snapshot,fields:Array(151).fill(field)}),'field limit');
+const response={...base,type:'HOST_REPLY',status:'needs_input',actions:[{fieldId:'f1',value:'demo@example.test'}],modelAvailable:true};
+assert(P.reply(response,snapshot),'valid action reply');
+assert(!P.reply({...response,sessionId:next},snapshot),'wrong session');
+assert(!P.reply({...response,requestId:id},snapshot),'wrong request');
+assert(!P.reply({...response,actions:[{fieldId:'f1',value:true}]},snapshot),'wire values must be strings');
+assert(!P.reply({...response,actions:[response.actions[0],response.actions[0]]},snapshot),'duplicate action');
+assert(!P.size({data:'x'.repeat(65537)}),'byte limit');
+assert(!P.size({data:'é'.repeat(33000)}),'utf8 byte limit');
+assert(P.push({name:'seeforme',userInfo:{v:1,type:'USER_INPUT',text:'Answer',source:'voice'}}),'wrapped push');
+assert(!P.push({v:1,type:'USER_INPUT',text:'Answer',source:'page'}),'invalid push source');
+function event() {return {addListener(f){this.fn=f;},removeListener(){}};}
+(async () => {
+  const requests=[],states=[];let pending,hold=false,sequence=2,unknownOnce=false;
+  const nativePort={onMessage:event(),onDisconnect:event(),disconnect(){}};
+  const context={documentId:id,revision:1};
+  let liveSnapshot={pageOrigin:'https://example.test',fields:[field]};
+  const browser={runtime:{id:'extension',onMessage:event(),connectNative:() => nativePort,sendNativeMessage:async (app,req) => {
+    assert(app === 'com.seeforme.app','native application id');assert(P.request(req),'sent valid wire schema');requests.push(req);
+    if (unknownOnce && req.type === 'USER_UTTERANCE') {unknownOnce=false;return {...req,type:'HOST_REPLY',status:'error',actions:[],modelAvailable:true,errorCode:'UNKNOWN_SESSION'};}
+    if (hold && req.type === 'USER_UTTERANCE') await new Promise(resolve => pending=resolve);
+    return {...req,type:'HOST_REPLY',status:'needs_input',actions:req.type === 'USER_UTTERANCE' ? [{fieldId:'f1',value:'demo@example.test'}] : [],modelAvailable:true};
+  }},tabs:{onUpdated:event(),onRemoved:event(),get:async () => ({url:'https://example.test/form'}),query:async () => [{id:1}],sendMessage:async (id,msg) => {
+    states.push(msg);
+    if (msg.operation === 'capture') return {context,snapshot:liveSnapshot};
+    if (msg.operation === 'fill') return {results:[{fieldId:'f1',success:true}],missingRequiredFieldIds:[],validationIssues:[]};
+  }}};
+  const session=SeeForMeSession.start(browser,{randomUUID:() => '00000000-0000-4000-8000-'+String(sequence++).padStart(12,'0')});
+  const sender={id:'extension',frameId:0,tab:{id:1,url:'https://example.test/form'},url:'https://example.test/form'};
+  const listener=browser.runtime.onMessage.fn;
+  await listener({channel:'seeforme',operation:'start',documentId:id,context,snapshot:{...liveSnapshot,pageOrigin:'https://forged.test'}},sender);
+  assert(requests[0].pageOrigin === 'https://example.test','origin from browser sender');
+  await listener({channel:'seeforme',operation:'utterance',documentId:id,text:'My email is demo@example.test'},sender);
+  assert(requests.map(r => r.type).join(',') === 'FORM_SNAPSHOT,FORM_SNAPSHOT,USER_UTTERANCE,FILL_RESULT','full typed request flow');
+  assert(states.some(s => s.operation === 'fill'),'action delivered to document');
+  const before=requests.length;
+  await listener({channel:'seeforme',operation:'utterance',documentId:id,text:'x'},{...sender,id:'foreign'});
+  assert(requests.length === before,'untrusted sender ignored');
+  const voiceBefore=requests.length;
+  await nativePort.onMessage.fn({name:'seeforme',userInfo:{v:1,type:'USER_INPUT',text:'Use my spoken answer',source:'voice'}});
+  assert(requests.slice(voiceBefore).some(r => r.type === 'USER_UTTERANCE' && r.source === 'voice'),'wrapped voice push reaches active session');
+  unknownOnce=true;const recoveryBefore=requests.length;
+  await listener({channel:'seeforme',operation:'utterance',documentId:id,text:'Retry my answer'},sender);
+  assert(requests.slice(recoveryBefore).map(r => r.type).join(',') === 'FORM_SNAPSHOT,USER_UTTERANCE,FORM_SNAPSHOT,USER_UTTERANCE,FILL_RESULT','unknown session recovered once');
+  hold=true;const active=listener({channel:'seeforme',operation:'utterance',documentId:id,text:'x'},sender);
+  for (let i=0;i<20 && !pending;i++) await Promise.resolve();
+  assert(!!pending,'native response held');
+  const fills=states.filter(s => s.operation === 'fill').length;
+  browser.tabs.onUpdated.fn(1,{status:'loading'});pending();await active;
+  assert(states.filter(s => s.operation === 'fill').length === fills,'late action after navigation dropped');
+  session.dispose();
+  print('PASS '+count+' protocol/session assertions');
+})().catch(e => {print('FAIL '+e.message);quit(1);});

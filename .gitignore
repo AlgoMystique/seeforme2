@@ -1,0 +1,14 @@
+.DS_Store
+**/.DS_Store
+.DS_Store?
+*.xcuserstate
+xcuserdata/
+DerivedData/
+.build/
+.swiftpm/
+.env
+.env.*
+!.env.example
+**/Secrets.plist
+**/Secrets.swift
+**/APIKeys.swift

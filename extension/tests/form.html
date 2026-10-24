@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SeeForMe synthetic registration</title>
+<style>body{font:18px system-ui;max-width:650px;margin:40px auto}label{display:block;margin:14px 0}input,select,textarea{font:inherit}fieldset{margin:20px 0}</style>
+<h1>Community event registration</h1>
+<p>Use synthetic details only. This form has no submit control.</p>
+<form onsubmit="event.preventDefault()">
+<label>First name <input name="first" autocomplete="given-name" required></label>
+<label>Email <input name="email" type="email" autocomplete="email" required></label>
+<label>Company <input name="company" value="Preserve this existing answer"></label>
+<label>Phone <input name="phone" type="tel" autocomplete="tel"></label>
+<label>Shirt size <select name="shirt" required><option value="">Choose…</option><option value="s">Small</option><option value="m">Medium</option><option value="l" disabled>Large (unavailable)</option></select></label>
+<fieldset><legend>Attendance</legend><label><input type="radio" name="attendance" value="in-person" required>In person</label><label><input type="radio" name="attendance" value="online">Online</label></fieldset>
+<label><input type="checkbox" name="updates">Send community event updates</label>
+<label>Accessibility needs <textarea name="accessibility"></textarea></label>
+<label>Password (excluded) <input type="password" name="password"></label>
+<label>Payment card (excluded) <input autocomplete="cc-number" name="card"></label>
+<label>Disabled (excluded) <input disabled name="disabled"></label>
+<label hidden>Hidden (excluded) <input name="hidden"></label>
+</form>
+<p>After filling, review fields manually. Navigate away during processing to check stale-response handling.</p>

@@ -23,6 +23,38 @@ import SeeForMeCore
             MainActor.assumeIsolated { self?.enqueue(command) }
         }
     }
+    /// An explicit Finder/Launch Services open grants the same user-selected folder access
+    /// as the picker. Reuse the existing cache and native transfer, never copy originals.
+    func connectOpenedFolder(_ folder: URL) {
+        guard (try? folder.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return }
+        let previous = tail
+        tail = Task {
+            await previous?.value
+            guard let store = try? LocalContextStore.local(), var snapshot = memory ?? (try? store.read()) else { return }
+            let access = folder.startAccessingSecurityScopedResource()
+            do {
+                var replacement = snapshot
+                replacement.connected = true; replacement.folderName = folder.lastPathComponent
+                replacement.active = true; replacement.explicitlyOff = false
+                replacement.activationID = replacement.activationID ?? UUID()
+                replacement.revision = UUID()
+                try LocalContextExtractor.load(folder: folder, into: &replacement)
+                retainFolder(folder, scoped: access)
+                UserDefaults.standard.set(folder.path, forKey: "localContextLastFolderPath")
+                replacement.allowRemoteSpeech = UserDefaults.standard.bool(forKey: "contextSpeechConsent")
+                replacement.sequence += 1
+                let requestId = UUID().uuidString
+                replacement.receipts = Array((replacement.receipts + [requestId]).suffix(32))
+                try store.write(replacement)
+                snapshot = replacement; memory = replacement
+                publish(snapshot, requestId: requestId)
+                Diagnostics.record("context.openFolder", ["ok": "true", "documents": String(snapshot.documents.count)])
+            } catch {
+                if access { folder.stopAccessingSecurityScopedResource() }
+                Diagnostics.record("context.openFolder", ["ok": "false"])
+            }
+        }
+    }
     nonisolated struct Command: Codable { var operation: String; var requestId: String }
     private func enqueue(_ command: Command) {
         guard UUID(uuidString: command.requestId) != nil,
@@ -55,6 +87,7 @@ import SeeForMeCore
             case "disconnect":
                 AppModel.shared.voice.stop()
                 UserDefaults.standard.removeObject(forKey: bookmarkKey)
+                UserDefaults.standard.removeObject(forKey: "localContextLastFolderPath")
                 retainFolder(nil, scoped: false)
                 snapshot.disconnect()
             case "connect", "change":
@@ -64,8 +97,7 @@ import SeeForMeCore
                 panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.allowsMultipleSelection = false
                 panel.prompt = "Connect Folder"
                 panel.message = "Read PDF, TXT, Markdown and DOCX locally. Originals stay in place. Only ask SeeForMe to fill websites you trust."
-                panel.directoryURL = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?
-                    .appendingPathComponent("SeeForMe Context", isDirectory: true)
+                panel.directoryURL = UserDefaults.standard.string(forKey: "localContextLastFolderPath").map { URL(fileURLWithPath: $0, isDirectory: true) } ?? FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first?.appendingPathComponent("SeeForMe Context", isDirectory: true)
                 let previousApp = NSWorkspace.shared.frontmostApplication
                 NSApp.activate()
                 defer { previousApp?.activate() }
@@ -85,6 +117,7 @@ import SeeForMeCore
                 if let bookmark { UserDefaults.standard.set(bookmark, forKey: bookmarkKey) }
                 else { UserDefaults.standard.removeObject(forKey: bookmarkKey) }
                 retainFolder(folder, scoped: access); retained = true
+                UserDefaults.standard.set(folder.path, forKey: "localContextLastFolderPath")
                 snapshot = replacement
             case "activate":
                 // New forms/calls and process restarts resume ON; only OFF → ON loads files.

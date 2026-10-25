@@ -3,6 +3,32 @@ import Testing
 @testable import SeeForMeCore
 
 @Suite(.serialized) struct ElevenLabsReasonerTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SEEFORME_LIVE_ELEVEN_TEST"] == "1"))
+    func bengaliContextQuestionWithoutForm() async throws {
+        var context = LocalContextSnapshot(); context.active = true; context.connected = true
+        context.documents = [.init(text: "Full name: Synthetic Person\nEmail: synthetic@example.test\nPreferred language: Bengali")]
+        let excerpt = context.relevantExcerpt(query: "আমার নাম কী?")
+        #expect(!excerpt.contains("synthetic@example.test"))
+        let reply = try await ElevenLabsReasoner().decide(text: "আমার কনটেক্সট থেকে আমার নাম বলুন", fields: [], question: nil, language: "bn", formLanguage: "ja", context: excerpt, contextAuthorized: true)
+        #expect(reply.usedContext)
+        #expect(reply.explanation.contains("Synthetic Person"))
+        #expect(reply.values.isEmpty)
+    }
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["SEEFORME_DEMO_CONTEXT_CHECK"] == "1"))
+    func connectedDemoPDFFactsAreUsed() async throws {
+        let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Containers/com.seeforme.app.extension/Data/Library/Application Support/SeeForMe/LocalContext")
+        let context = try LocalContextStore(directory: directory).read()
+        guard context.active, context.connected, context.preferredLanguage == "bn", !context.documents.isEmpty else { throw ConversationError.unsupported }
+        let cached = context
+        let engine = FormEngine(conversation: SeeForMeConversationReasoner(), modelAvailable: { true }, contextProvider: { cached })
+        var snapshot = InboundMessage(type: "FORM_SNAPSHOT", sessionId: "demo-cache-check", requestId: "1", pageOrigin: "http://localhost", fields: [FormField(id: "name", label: "Full name", kind: .text, required: true), FormField(id: "email", label: "Email", kind: .email, required: true)])
+        snapshot.formLanguage = "en"
+        _ = await engine.handle(snapshot)
+        let reply = await engine.handle(InboundMessage(type: "USER_UTTERANCE", sessionId: "demo-cache-check", requestId: "2", text: "হ্যাঁ", source: "voice"))
+        // Never print personal values in assertion diagnostics.
+        guard reply.actions.count == 2, reply.status != .submit,
+              reply.actions.allSatisfy({ action in context.documents.contains { $0.text.contains(action.value) } }) else { throw ConversationError.unsupported }
+    }
     @Test func snippetSelectionDoesNotSendUnrelatedProfile() {
         var context = LocalContextSnapshot(); context.active = true; context.connected = true
         context.documents = [.init(text: "Name: Synthetic Person\nEmail: synthetic@example.test\nUnrelated private notes never needed here\nPreferred language: Bengali")]

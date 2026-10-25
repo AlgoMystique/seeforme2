@@ -76,6 +76,8 @@ final class AppModel {
         }
     }
 
+    func connectContextFolder(_ folder: URL) { contextController?.connectOpenedFolder(folder) }
+
     // MARK: VOICE_START / VOICE_STOP from Safari (PROTOCOL.md section 12)
 
     func handle(_ command: VoiceCommand) {

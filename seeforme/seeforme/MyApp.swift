@@ -66,6 +66,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !model.voice.hasKey { model.showWindow() }
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if let folder = urls.first { AppModel.shared.connectContextFolder(folder) }
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         AppModel.shared.applicationWillTerminate()
     }

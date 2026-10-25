@@ -73,7 +73,20 @@ public struct LocalContextSnapshot: Codable, Sendable {
     /// Only matching fact snippets, never the whole document, are eligible for remote reasoning.
     public func relevantExcerpt(query: String) -> String {
         guard active && connected else { return "" }
-        let terms = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.filter { $0.count > 2 }.map(String.init))
+        var terms = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.filter { $0.count > 2 }.map(String.init))
+        // Match common spoken Bengali facts and form-label synonyms locally.
+        // Expand only the requested category; unrelated profile facts remain private.
+        let groups = [
+            ["name", "নাম"], ["email", "ইমেইল", "ইমেল"],
+            ["phone", "mobile", "telephone", "tel", "ফোন", "মোবাইল"],
+            ["company", "organization", "employer", "কোম্পানি", "প্রতিষ্ঠান"],
+            ["role", "occupation", "job", "profession", "পেশা"],
+            ["birth", "birthday", "dob", "জন্ম"], ["website", "ওয়েবসাইট"],
+            ["description", "biography", "bio", "বিবরণ", "পরিচয়"]
+        ]
+        for group in groups where group.contains(where: { query.localizedCaseInsensitiveContains($0) }) {
+            terms.formUnion(group)
+        }
         let pieces = documents.flatMap { $0.text.components(separatedBy: .newlines) }
             .flatMap { $0.components(separatedBy: ". ") }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

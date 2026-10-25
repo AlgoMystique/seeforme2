@@ -34,6 +34,27 @@ private struct ContinuingContextReasoner: ConversationReasoner {
 }
 
 @Suite(.serialized) struct LocalContextTests {
+    @Test func bengaliFactQueriesSelectOnlyRelevantCachedFacts() {
+        var state = LocalContextSnapshot(); state.active = true; state.connected = true
+        state.documents = [.init(text: "Full name: Synthetic Person\nMobile number: 0400000000\nEmail: synthetic@example.test\nUnrelated private note")]
+        #expect(state.relevantExcerpt(query: "আমার নাম কী").contains("Synthetic Person"))
+        #expect(!state.relevantExcerpt(query: "আমার নাম কী").contains("synthetic@example.test"))
+        #expect(state.relevantExcerpt(query: "telephone").contains("0400000000"))
+    }
+    @Test func contextAnswerIsNotReplacedWithPageDescription() async {
+        var state = LocalContextSnapshot(); state.active = true; state.connected = true
+        state.documents = [.init(text: "Full name: Synthetic Person")]
+        let cached = state
+        var decision = ConversationDecision(intent: .help, explanation: "Synthetic Person")
+        decision.usedContext = true
+        let engine = FormEngine(conversation: StubConversation(decision: decision), modelAvailable: { true }, contextProvider: { cached })
+        var snapshot = InboundMessage(type: "FORM_SNAPSHOT", sessionId: "context-question", requestId: "1", pageOrigin: "http://localhost", fields: [])
+        snapshot.pageText = "Unrelated event description"
+        _ = await engine.handle(snapshot)
+        let reply = await engine.handle(InboundMessage(type: "USER_UTTERANCE", sessionId: "context-question", requestId: "2", text: "What is my name from context?", source: "voice"))
+        #expect(reply.question?.text == "Synthetic Person")
+        #expect(reply.actions.isEmpty)
+    }
     func fixture() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("seeforme-context-test-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -72,6 +93,9 @@ private struct ContinuingContextReasoner: ConversationReasoner {
         let initial = await engine.handle(snapshot)
         #expect(initial.conversationLanguage == "bn")
         #expect(initial.actions.isEmpty)
+        snapshot.requestId = "rescan"
+        let rescanned = await engine.handle(snapshot)
+        #expect(rescanned.conversationLanguage == "bn")
         let request = await engine.handle(InboundMessage(type: "USER_UTTERANCE", sessionId: "bengali", requestId: "2", text: "কথা বলো বাংলাতে। বাংলাই আমার preferred language", source: "voice"))
         #expect(request.conversationLanguage == "bn")
         #expect(request.status == .needsInput)

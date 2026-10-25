@@ -62,7 +62,7 @@ public struct ElevenLabsReasoner: ConversationReasoner {
         return String(try JSONDecoder().decode(TextReply.self, from: data).text.prefix(1500))
     }
     private struct Decision: Decodable {
-        struct Value: Decodable { let fieldId: String; let source: String; let value: String }
+        struct Value: Decodable { let fieldId: String?; let source: String?; let value: String? }
         let intent: String; let explanation: String; let language: String?; let usedContext: Bool; let values: [Value]
     }
     public func decide(text: String, fields: [FormField], question: Question?, language: String, formLanguage: String?) async throws -> ConversationDecision {
@@ -74,23 +74,24 @@ public struct ElevenLabsReasoner: ConversationReasoner {
     public func decide(text: String, fields: [FormField], question: Question?, language: String, formLanguage: String?, context: String, contextAuthorized: Bool) async throws -> ConversationDecision {
         let eligible = Array(fields.filter { $0.isFillable && !$0.currentValuePresent }.prefix(20))
         let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(eligible))
-        let data = try await complete(["task": "decide", "contextAuthorized": contextAuthorized, "conversationLanguage": language, "formLanguage": formLanguage ?? "infer from labels", "utterance": String(text.prefix(1000)), "question": question?.text ?? "", "fields": encoded, "context": String(context.prefix(2000))])
+        let data = try await complete(["task": "decide", "contextAvailable": !context.isEmpty, "contextAuthorized": contextAuthorized, "conversationLanguage": language, "formLanguage": formLanguage ?? "infer from labels", "utterance": String(text.prefix(1000)), "question": question?.text ?? "", "fields": encoded, "context": String(context.prefix(2000))])
         let parsed = try JSONDecoder().decode(Decision.self, from: data)
         guard let intent = ConversationDecision.Intent(rawValue: parsed.intent) else { throw ConversationError.unsupported }
         let evidence = text + (parsed.usedContext ? "\n" + context : "")
         var values: [ConversationValue] = []
         for item in parsed.values.prefix(20) {
-            guard intent == .answer, let field = eligible.first(where: { $0.id == item.fieldId }),
-                  !item.source.isEmpty, evidence.localizedCaseInsensitiveContains(item.source), item.value.count <= 1500,
-                  field.kind != .checkbox || text.localizedCaseInsensitiveContains(item.source) else { continue }
-            var value = item.value
+            guard intent == .answer, let fieldId = item.fieldId, let source = item.source, let proposed = item.value,
+                  let field = eligible.first(where: { $0.id == fieldId }),
+                  !source.isEmpty, evidence.localizedCaseInsensitiveContains(source), proposed.count <= 1500,
+                  field.kind != .checkbox || text.localizedCaseInsensitiveContains(source) else { continue }
+            var value = proposed
             if [.text, .textarea].contains(field.kind), !FieldRules.isIdentity(field),
                let target = field.language ?? formLanguage, !target.isEmpty,
                !ConversationLanguage.same(ConversationLanguage.detect(value) ?? "", target) {
                 value = try await translate(value, language: target)
                 guard ConversationLanguage.same(ConversationLanguage.detect(value) ?? "", target) else { continue }
             }
-            values.append(ConversationValue(fieldId: item.fieldId, source: item.source, value: value))
+            values.append(ConversationValue(fieldId: fieldId, source: source, value: value))
         }
         var result = ConversationDecision(intent: intent, explanation: String(parsed.explanation.prefix(1000)), language: parsed.language, values: values)
         result.usedContext = parsed.usedContext && !context.isEmpty

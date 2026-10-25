@@ -210,7 +210,9 @@ public actor FormEngine {
             sessions[oldest] = nil
         }
 
-        if let language = message.conversationLanguage, !language.isEmpty {
+        // A DOM rescan carries browser preferences, not a new spoken language choice.
+        // Preserve the context-selected (or explicitly changed) language for this session.
+        if sessions[message.sessionId] == nil, let language = message.conversationLanguage, !language.isEmpty {
             if language != session.language { session.pendingTranslation = []; session.pendingSchema = [] }
             session.language = String(language.prefix(40))
         }
@@ -280,9 +282,17 @@ public actor FormEngine {
         if session.fields.isEmpty {
             var completed = false
             var answer = "I couldn't read enough page text to explain it. Try a page with visible text."
-            if !session.pageText.isEmpty, let conversation, modelAvailable() {
+            if let conversation, modelAvailable() {
                 do {
-                    let intent = try await conversation.decide(text: text, fields: [], question: nil, language: session.language, formLanguage: session.formLanguage)
+                    let local = contextProvider()
+                    let excerpt = local.relevantExcerpt(query: text)
+                    if local.active && local.connected && !local.documents.isEmpty && excerpt.isEmpty &&
+                        ["context", "কনটেক্সট", "প্রসঙ্গ"].contains(where: { text.localizedCaseInsensitiveContains($0) }) {
+                        session.question = Question(text: "Your context is connected and loaded. Ask me about a specific detail, or open the form you want me to fill.", fieldIds: [])
+                        return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
+                                         question: session.question, modelAvailable: modelAvailable())
+                    }
+                    let intent = try await conversation.decide(text: text, fields: [], question: nil, language: session.language, formLanguage: session.formLanguage, context: excerpt, contextAuthorized: session.contextApproved)
                     if intent.intent == .unsupported {
                         answer = "Sorry, I am not authorised to do that yet. I can explain this page and help fill supported forms."
                     } else if intent.intent == .language {
@@ -290,7 +300,9 @@ public actor FormEngine {
                         session.question = Question(text: "Conversation language: " + ConversationLanguage.name(session.language) + ".", fieldIds: [])
                         return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
                                          question: session.question, modelAvailable: modelAvailable())
-                    } else { answer = try await pageExplanation(text: text, session: session, message: message, using: conversation) }
+                    } else if intent.usedContext && !intent.explanation.isEmpty {
+                        answer = intent.explanation
+                    } else if !session.pageText.isEmpty { answer = try await pageExplanation(text: text, session: session, message: message, using: conversation) }
                     completed = true
                 }
                 catch { answer = "Page explanation is temporarily unavailable. Please try again." }
@@ -434,6 +446,10 @@ public actor FormEngine {
                 }
                 if decision.intent != .answer {
                     // Explanations never advance consent or produce actions.
+                    if decision.usedContext && !decision.explanation.isEmpty {
+                        return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
+                            question: Question(text: decision.explanation, fieldIds: []), modelAvailable: true)
+                    }
                     if !session.pageText.isEmpty {
                         let explanation = try await pageExplanation(text: text, session: session, message: message, using: conversation)
                         return HostReply(sessionId: message.sessionId, requestId: message.requestId,

@@ -6,6 +6,31 @@ import os
 /// Written to the system log (persisted, `notice` level) and to
 /// `Library/Application Support/seeforme-diagnostics.log` in the process's own sandbox container.
 public enum Diagnostics {
+    /// Fixed categories only: error descriptions and decoding paths can contain
+    /// utterances or model output and must never enter diagnostics.
+    static func reasoningCode(_ error: Error) -> String {
+        if let decoding = error as? DecodingError {
+            switch decoding {
+            case .keyNotFound: return "REPLY_MISSING_KEY"
+            case .valueNotFound: return "REPLY_NULL_VALUE"
+            case .typeMismatch: return "REPLY_TYPE_MISMATCH"
+            case .dataCorrupted: return "REPLY_INVALID_DATA"
+            @unknown default: return "REPLY_DECODE_FAILED"
+            }
+        }
+        if let network = error as? URLError {
+            return network.code == .timedOut ? "REASONING_TIMEOUT" : "REASONING_NETWORK"
+        }
+        if let provider = error as? ElevenLabsClient.Failure {
+            switch provider {
+            case .invalidKey: return "REASONING_AUTH"
+            case .quotaOrRateLimit: return "REASONING_RATE_LIMIT"
+            case .badResponse: return "REASONING_BAD_RESPONSE"
+            case .http(let status): return "REASONING_HTTP_" + String(status)
+            }
+        }
+        return "REASONING_FAILED"
+    }
     private static let logger = Logger(subsystem: "com.seeforme.app", category: "diagnostics")
     private static let lock = NSLock()
     private static let maxBytes = 256 * 1024

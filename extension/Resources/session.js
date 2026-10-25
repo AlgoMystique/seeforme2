@@ -219,7 +219,15 @@
         if (!msg.context || msg.context.documentId !== msg.documentId || !Number.isInteger(msg.context.revision) || typeof msg.documentId !== 'string' || !msg.snapshot) return;
         const s={id:crypto.randomUUID(),url:sender.tab.url,documentId:msg.documentId,context:msg.context,snapshot:{...msg.snapshot,pageOrigin:origin},busy:false};
         sessions.set(tabId,s);
-        return queue(tabId,s,async () => { await contextRequest('activate'); if (!current(tabId,s)) return; await handle(tabId,s,await send(s,'FORM_SNAPSHOT',s.snapshot)); if (lastVoice) await routeVoice(); return {ok:true}; });
+        return queue(tabId,s,async () => {
+          // Folder context is optional; an unavailable context service must not
+          // prevent the host from asking for answers to the page's form fields.
+          try { await contextRequest('activate'); } catch (_) {}
+          if (!current(tabId,s)) return;
+          await handle(tabId,s,await send(s,'FORM_SNAPSHOT',s.snapshot));
+          if (lastVoice) await routeVoice();
+          return {ok:true};
+        });
       }
       const s=sessions.get(tabId);
       if (!s || s.documentId !== msg.documentId) return;

@@ -38,7 +38,10 @@ public struct ElevenLabsReasoner: ConversationReasoner {
                               let reply = event["agent_response_event"] as? [String: Any], let text = reply["agent_response"] as? String,
                               let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start <= end {
                         return Data(text[start...end].utf8)
-                    } else if type == "error" { throw ElevenLabsClient.Failure.badResponse }
+                    } else if type == "error" {
+                        Diagnostics.record("reasoning.eleven.failure", ["stage": "AGENT_ERROR"])
+                        throw ElevenLabsClient.Failure.badResponse
+                    }
                 }
                 throw ElevenLabsClient.Failure.badResponse
             }
@@ -61,9 +64,20 @@ public struct ElevenLabsReasoner: ConversationReasoner {
         let data = try await complete(["task": "explain", "conversationLanguage": language, "utterance": String(text.prefix(1000)), "page": String(page.prefix(3500))])
         return String(try JSONDecoder().decode(TextReply.self, from: data).text.prefix(1500))
     }
-    private struct Decision: Decodable {
+    struct Decision: Decodable {
         struct Value: Decodable { let fieldId: String?; let source: String?; let value: String? }
         let intent: String; let explanation: String; let language: String?; let usedContext: Bool; let values: [Value]
+        enum CodingKeys: String, CodingKey { case intent, explanation, language, usedContext, values }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            intent = try c.decode(String.self, forKey: .intent)
+            // Answer-only replies may omit prose, language and context flags or
+            // encode them as null. They are not prerequisites for a fill action.
+            explanation = try c.decodeIfPresent(String.self, forKey: .explanation) ?? ""
+            language = try c.decodeIfPresent(String.self, forKey: .language)
+            usedContext = try c.decodeIfPresent(Bool.self, forKey: .usedContext) ?? false
+            values = try c.decodeIfPresent([Value].self, forKey: .values) ?? []
+        }
     }
     public func decide(text: String, fields: [FormField], question: Question?, language: String, formLanguage: String?) async throws -> ConversationDecision {
         try await decide(text: text, fields: fields, question: question, language: language, formLanguage: formLanguage, context: "")
@@ -75,7 +89,12 @@ public struct ElevenLabsReasoner: ConversationReasoner {
         let eligible = Array(fields.filter { $0.isFillable && !$0.currentValuePresent }.prefix(20))
         let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(eligible))
         let data = try await complete(["task": "decide", "contextAvailable": !context.isEmpty, "contextAuthorized": contextAuthorized, "conversationLanguage": language, "formLanguage": formLanguage ?? "infer from labels", "utterance": String(text.prefix(1000)), "question": question?.text ?? "", "fields": encoded, "context": String(context.prefix(2000))])
-        let parsed = try JSONDecoder().decode(Decision.self, from: data)
+        let parsed: Decision
+        do { parsed = try JSONDecoder().decode(Decision.self, from: data) }
+        catch {
+            Diagnostics.record("reasoning.eleven.decode", ["code": Diagnostics.reasoningCode(error)])
+            throw error
+        }
         guard let intent = ConversationDecision.Intent(rawValue: parsed.intent) else { throw ConversationError.unsupported }
         let evidence = text + (parsed.usedContext ? "\n" + context : "")
         var values: [ConversationValue] = []

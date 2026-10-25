@@ -2,6 +2,54 @@ import Foundation
 
 /// Deterministic checks applied to every proposed value, whoever proposed it.
 enum FieldRules {
+    static func isEmail(_ field: FormField) -> Bool {
+        field.kind == .email || (field.kind == .text &&
+            (field.autocomplete == "email" || field.label.range(of: "(?i)\\be-?mail\\b|ইমেইল|ইমেল", options: .regularExpression) != nil))
+    }
+
+    /// Recover explicitly supplied name + literal email in one turn. An email
+    /// is never guessed from a name, and ambiguous addresses are left untouched.
+    static func combinedIdentifiers(_ text: String, fields: [FormField], targeted: [FormField], language: String) -> [Proposal] {
+        guard text.range(of: "[?？]|(?i)\\b(help|explain|ignore|don't|do not|submit)\\b|কী|কেন|ব্যাখ্যা", options: .regularExpression) == nil else { return [] }
+        let emails = Array(Set(text.matches(of: /[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/).map { String($0.output) }))
+        let emailFields = fields.filter { $0.isFillable && isEmail($0) && !$0.currentValuePresent }
+        guard emails.count == 1, emailFields.count == 1 else { return [] }
+        var proposals = [Proposal(fieldId: emailFields[0].id, value: emails[0])]
+        let names = targeted.filter { isName($0) && $0.isFillable }
+        guard names.count == 1 else { return proposals }
+        var clause = text.replacingOccurrences(of: "(?i)^(?:yes|হ্যাঁ)[,।\\s]+", with: "", options: .regularExpression)
+        guard clause.range(of: "(?i)^(?:my (?:full )?name is|আমার (?:পুরো |পূর্ণ |সম্পূর্ণ )?নাম)\\s", options: .regularExpression) != nil else { return proposals }
+        if let end = clause.range(of: "[।;]|(?i)(?:contact\\s+email|(?:my\\s+)?email|(?:আমার\\s+)?ইমেইল|(?:আমার\\s+)?ইমেল)", options: .regularExpression) {
+            clause = String(clause[..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ",.")))
+        }
+        if let name = directAnswer(clause, for: names[0], language: language) {
+            proposals.insert(Proposal(fieldId: names[0].id, value: name), at: 0)
+        }
+        return proposals
+    }
+
+    /// A literal answer to one requested field. Never reads documents, splits a
+    /// person's name, translates identifiers, or treats a help request as a value.
+    static func directAnswer(_ text: String, for field: FormField, language: String) -> String? {
+        let raw = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty, raw.count <= 300, ShortReply(raw) == nil,
+              raw.range(of: "[?？]|(?i)\\b(what|why|how|help|explain|translate|context|submit|click|ignore|don't|do not|change language)\\b|কী|কি |কেন|কিভাবে|সাহায্য|ব্যাখ্যা|কনটেক্সট|জমা|নাম বলুন", options: .regularExpression) == nil else { return nil }
+        if isName(field) {
+            let name = raw.replacingOccurrences(of: "(?i)^(?:my (?:full )?name is|i am|i'm|আমি|আমার (?:পুরো |পূর্ণ |সম্পূর্ণ )?নাম(?: হলো| হচ্ছে| হল)?)\\s*[:,،]?\\s+", with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines.union(CharacterSet(charactersIn: ".।")))
+            guard name.split(whereSeparator: \.isWhitespace).count <= 8,
+                  name.range(of: "(?i)\\b(please|tell|can|could|would|not|skip|stop|change|switch|use|fill|delete|remove|open|download|pay|buy|speak|talk)\\b|জানি না|বলুন|বলো|করুন", options: .regularExpression) == nil,
+                  name.range(of: "^[\\p{L}\\p{M} .’'\\-]+$", options: .regularExpression) != nil,
+                  !nameNeedsSpellingConfirmation(name, conversationLanguage: language) else { return nil }
+            return normalize(name, for: field)
+        }
+        if isEmail(field) { return spokenEmail(raw).flatMap { normalize($0, for: field) } }
+        if field.kind == .tel {
+            let phone = raw.replacingOccurrences(of: "(?i)^(?:my (?:phone|phone number|number) is|আমার (?:ফোন নম্বর|নম্বর))\\s+", with: "", options: .regularExpression)
+            return normalize(phone, for: field)
+        }
+        return nil
+    }
 
     static func isName(_ field: FormField) -> Bool {
         if ["name", "given-name", "family-name", "additional-name"].contains(field.autocomplete ?? "") { return true }

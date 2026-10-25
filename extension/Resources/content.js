@@ -348,7 +348,7 @@ const callBar=el('div','call-bar'), speaker=button('call-control','Mute spoken r
       const voiceLabels={idle:'Voice off',listening:speechDetected ? 'Hearing you…' : 'Listening…',transcribing:'Transcribing…',thinking:'Thinking…',speaking:'Speaking…',error:'Voice needs attention'};
       stateText.textContent=voice && !['idle','error'].includes(voice) ? 'Voice on' : voice === 'error' ? 'Voice error' : 'Voice off';
       stateText.title=voice ? voiceLabels[voice] : labels[phase] || 'Ready to talk';
-      const cloudText=contextError || voiceMessage || (voicePending === 'start' ? 'Starting voice...' : contextLoading ? 'Learning context...' : !contextConnected || !contextActive ? 'Please connect context' : ({listening:"I’m listening...",thinking:'Let me think...',transcribing:'Let me think...',speaking:'Speaking...',error:'Voice needs attention'}[voice]) || 'Ready to help');
+      const cloudText=voiceMessage || (voicePending === 'start' ? 'Starting voice...' : contextLoading ? 'Learning context...' : ({listening:"I’m listening...",thinking:'Let me think...',transcribing:'Let me think...',speaking:'Speaking...',error:'Voice needs attention'}[voice]) || 'Tap Talk for form help');
       if (cloudLabel.textContent !== cloudText) cloudLabel.textContent=cloudText;
       panel.dataset.voice=voice || 'idle';panel.dataset.speech=String(voice === 'listening' && speechDetected);
       renderVoiceControl();
@@ -576,10 +576,6 @@ const callBar=el('div','call-bar'), speaker=button('call-control','Mute spoken r
   async function voiceAction(operation,contextReady=false) {
     if (operation === 'start' && dismissed) return;
     if (operation === 'start' && busy) {const error=new Error('Form busy');error.code='BUSY';throw error;}
-    if (operation === 'start' && !contextReady) {
-      const context=await contextAction('status');
-      if (context?.ok && !context.state?.connected) {await contextAction('connect');return;}
-    }
     if (operation === 'start' && !await inspect()) throw new Error('Inspection failed');
     if (operation === 'start' && dismissed) return;
     if (operation === 'start' && busy) throw new Error('Please wait');

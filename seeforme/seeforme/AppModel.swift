@@ -83,7 +83,9 @@ final class AppModel {
     func handle(_ command: VoiceCommand) {
         switch command {
         case .start:
-            guard !voice.isOn else { return Diagnostics.record("app.command.ignored", ["reason": "alreadyOn"]) }
+            // Safari inspects before every explicit start. A previous document's
+            // pending turn must not swallow the new call or keep its old question.
+            if voice.isOn { voice.stop() }
             Task {
                 let context = try? LocalContextStore.local().read()
                 let connected = context?.active == true && context?.connected == true

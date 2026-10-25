@@ -325,6 +325,9 @@ public actor FormEngine {
                 // A substantive spoken request remains available; the reasoner still
                 // requires explicit context intent and grounded evidence.
                 session.contextOffer = false
+                // The offer has no field IDs. Select the next missing field
+                // before interpreting a substantive answer to that greeting.
+                _ = nextStep(&session, message: message, actions: [], note: nil)
             }
         }
         if let language = session.pendingLanguage {
@@ -392,16 +395,31 @@ public actor FormEngine {
         // Deterministic recovery for spoken identifiers when one field is being asked.
         // Explicit spelling fills directly and never authorizes submission.
         let targeted = (session.question?.fieldIds ?? []).compactMap { session.fields[$0] }
+        let identifiers = FieldRules.combinedIdentifiers(text,
+            fields: session.order.compactMap { session.fields[$0] }, targeted: targeted, language: session.language)
+        let supplied = validate(identifiers, utterance: text, session: session)
+        if !supplied.isEmpty {
+            return nextStep(&session, message: message, actions: supplied, note: nil)
+        }
         if message.source == "voice", targeted.count == 1, let field = targeted.first, field.isFillable,
            !field.currentValuePresent || session.filledByUs.contains(field.id) {
             let explicit: String? = FieldRules.isName(field) ? FieldRules.spelledName(text)
-                : field.kind == .email ? FieldRules.spokenEmail(text) : nil
+                : FieldRules.isEmail(field) ? FieldRules.spokenEmail(text) : nil
             if let explicit, let value = FieldRules.normalize(explicit, for: field) {
                 return nextStep(&session, message: message, actions: [FillAction(fieldId: field.id, value: value,
                     overwrite: session.filledByUs.contains(field.id) ? true : nil)], note: nil)
             }
         }
+        if targeted.count == 1, let field = targeted.first, field.isFillable,
+           !field.currentValuePresent || session.filledByUs.contains(field.id),
+           let value = FieldRules.directAnswer(text, for: field, language: session.language) {
+            Diagnostics.record("reasoning.directAnswer", ["kind": field.kind.rawValue])
+            return nextStep(&session, message: message, actions: [FillAction(fieldId: field.id, value: value,
+                overwrite: session.filledByUs.contains(field.id) ? true : nil)], note: nil)
+        }
         let candidates = session.order.compactMap { session.fields[$0] }.filter(\.isFillable)
+        Diagnostics.record("reasoning.question", ["targets": String(targeted.count),
+            "nameTargets": String(targeted.filter { FieldRules.isName($0) }.count)])
         if let conversation, modelAvailable() {
             do {
                 let local = contextProvider()
@@ -449,6 +467,9 @@ public actor FormEngine {
                     if decision.usedContext && !decision.explanation.isEmpty {
                         return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
                             question: Question(text: decision.explanation, fieldIds: []), modelAvailable: true)
+                    }
+                    if decision.intent == .help {
+                        return nextStep(&session, message: message, actions: [], note: decision.explanation)
                     }
                     if !session.pageText.isEmpty {
                         let explanation = try await pageExplanation(text: text, session: session, message: message, using: conversation)
@@ -507,6 +528,19 @@ public actor FormEngine {
                                     ? "I couldn't verify the exact email address. Please say every dot, at sign or underscore, and I will read it back. I won't guess missing characters."
                                     : "I couldn't verify that answer. Please spell the detail aloud.") : nil)
             } catch {
+                Diagnostics.record("reasoning.failed", ["code": Diagnostics.reasoningCode(error),
+                    "nativeCode": String((error as NSError).code),
+                    "provider": ConversationLanguage.same(session.language, "bn") ? "eleven" : "apple"])
+                // A failed model request must not discard an explicit, grounded
+                // answer. Restrict recovery to the question actually asked.
+                let recovery = await recoverAnswer(text, targeted: targeted, session: session)
+                if !recovery.isEmpty {
+                    return nextStep(&session, message: message, actions: recovery, note: nil)
+                }
+                if contextRequest {
+                    return nextStep(&session, message: message, actions: [],
+                        note: "I couldn't retrieve that answer from context. Let's fill the missing fields together.")
+                }
                 return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
                                  question: session.question, message: "I couldn't interpret that safely. Please try again; no fields were changed.",
                                  modelAvailable: modelAvailable())
@@ -531,6 +565,19 @@ public actor FormEngine {
             note = "Filled \(Self.list(labels))."
         }
         return nextStep(&session, message: message, actions: actions, note: note)
+    }
+
+    private func recoverAnswer(_ text: String, targeted: [FormField], session: Session) async -> [FillAction] {
+        guard !targeted.isEmpty, ShortReply(text) == nil,
+              text.range(of: "[?？]|(?i)\\b(what|why|how|help|explain|translate|context|submit|click|ignore|don't|do not)\\b|কী|কেন|কিভাবে|সাহায্য|ব্যাখ্যা|কনটেক্সট", options: .regularExpression) == nil else { return [] }
+        // Identity recovery is handled above. Do not bypass name script checks,
+        // infer consent, or silently copy untranslated descriptive answers.
+        let eligible = targeted.filter {
+            !$0.currentValuePresent && !FieldRules.isIdentity($0) && $0.kind != .checkbox &&
+            ConversationLanguage.same($0.language ?? session.formLanguage ?? session.language, session.language)
+        }
+        let proposals = (try? await HeuristicExtractor().extract(utterance: text, fields: eligible, question: session.question)) ?? []
+        return validate(proposals, utterance: text, session: session)
     }
 
     private func translationReview(_ session: Session, message: InboundMessage) -> HostReply {

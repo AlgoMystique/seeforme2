@@ -20,6 +20,13 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         struct Envelope: Decodable { var v: Int?; var type: String; var requestId: String?; var conversationLanguage: String?; var voiceId: String?; var utteranceId: String?; var operation: String? }
         let envelope = data.flatMap { try? JSONDecoder().decode(Envelope.self, from: $0) }
         let requestType = envelope?.type
+        if requestType == "FILL_RESULT", let data,
+           let receipt = try? JSONDecoder().decode(InboundMessage.self, from: data) {
+            let results = receipt.results ?? []
+            Diagnostics.record("ext.fillReadback", [
+                "succeeded": String(results.filter { $0.success }.count),
+                "failed": String(results.filter { !$0.success }.count)])
+        }
 
         if requestType == "CONTEXT_CACHE_PART" {
             guard let data, data.count <= 48_000,

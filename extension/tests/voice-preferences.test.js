@@ -1,6 +1,6 @@
 // Native options and preference bridge: no API key, audio, or live native calls.
 (async function () {
-  let count=0, listener, toolbar, stored={}, wrongId=false, requests=[], tabMessages=[];
+  let count=0, listener, toolbar, stored={}, wrongId=false, requests=[], tabMessages=[], explicitlyOff=false;
   const check=(ok,name)=>{if(!ok)throw Error(name);count++;};
   globalThis.crypto={randomUUID:()=> '00000000-0000-4000-8000-000000000001'};
   globalThis.browser={
@@ -8,6 +8,7 @@
     action:{onClicked:{addListener(fn){toolbar=fn;}},setBadgeText:async()=>{}},
     tabs:{query:async()=>[{id:5}],onRemoved:{addListener(){}},sendMessage:async(id,msg)=>{tabMessages.push({id,...msg});}},
     runtime:{id:'extension',onMessage:{addListener(fn){listener=fn;}},sendNativeMessage:async(app,req)=>{
+if (req.type === 'LOCAL_CONTEXT') return {v:1,type:'CONTEXT_STATE',requestId:req.requestId,ok:true,state:{active:!explicitlyOff,explicitlyOff,connected:false}};
       requests.push(req);
       if(req.type==='VOICE_OPTIONS')return {v:1,type:'VOICE_OPTIONS',requestId:req.requestId,systemLanguage:'fr-FR',languages:[{id:'fr',name:'French'},{id:'en',name:'English'}],voices:[{id:'voice-one',name:'One'}]};
       return {v:1,type:'VOICE_ACK',requestId:wrongId?'wrong':req.requestId,accepted:true,appLaunched:false};
@@ -36,6 +37,9 @@
   check(!('conversationLanguage' in stored),'Mac default remains an omitted override');
   const auto=(id)=>listener({channel:'seeforme-voice',operation:'auto-start'},{id:'extension',frameId:0,tab:{id}});
   check(!(await auto(6)).start,'background tab cannot auto-start voice');
+  explicitlyOff=true;
+  check(!(await auto(5)).start,'explicit OFF survives automatic-start checks');
+  explicitlyOff=false;
   check((await auto(5)).start,'active tab receives one automatic start');
   check(!(await auto(5)).start,'completion or reload cannot repeatedly auto-start');
   print('PASS '+count+' voice preference assertions');

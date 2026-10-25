@@ -42,6 +42,7 @@ function event() {return {addListener(f){this.fn=f;},removeListener(){}};}
   const context={documentId:id,revision:1};
   let liveSnapshot={pageOrigin:'https://example.test',fields:[field]};
   const browser={runtime:{id:'extension',onMessage:event(),connectNative:() => nativePort,sendNativeMessage:async (app,req) => {
+if (req.type === 'LOCAL_CONTEXT') return {v:1,type:'CONTEXT_STATE',requestId:req.requestId,ok:true,state:{active:true,connected:false}};
     assert(app === 'com.seeforme.app','native application id');assert(P.request(req),'sent valid wire schema');requests.push(req);
     if (unknownOnce && req.type === 'USER_UTTERANCE') {unknownOnce=false;return {...req,type:'HOST_REPLY',status:'error',actions:[],modelAvailable:true,errorCode:'UNKNOWN_SESSION'};}
     if (hold && req.type === 'USER_UTTERANCE') await new Promise(resolve => pending=resolve);

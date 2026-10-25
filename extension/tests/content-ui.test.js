@@ -9,6 +9,8 @@ load('extension/tests/ui.test.js');
   globalThis.location={href:'https://example.test/form'};
   globalThis.setInterval=() => 1;globalThis.clearInterval=() => {};
   const calls=[];let captures=0,fillCalls=0,fillPromise,resolveFill,listener;
+  let holdOff=false, releaseOff;
+  const contextOps=[];let contextActive=true,contextConnected=true;
   const engine={
     captureProtocol() {captures++;return {context:{documentId:'test-document',revision:captures},snapshot:{fields:[{id:'email',required:true,visible:true,disabled:false,currentValuePresent:false}]}};},
     highlight() {}, dispose() {}, reviewSubmission() {}, resetSubmissionReview() {}, resetSubmissionSession() {},
@@ -18,6 +20,15 @@ load('extension/tests/ui.test.js');
   };
   globalThis.SeeForMeDOM={createEngine:() => engine};
   globalThis.browser={runtime:{id:'test-extension',onMessage:{addListener(fn){listener=fn;}},async sendMessage(message) {
+    if (message.channel === 'seeforme-context') {
+      contextOps.push(message.operation);
+      if (message.operation==='off' && holdOff) await new Promise(resolve=>releaseOff=resolve);
+      if (message.operation === 'off') contextActive=false;
+      if (message.operation === 'activate') contextActive=true;
+      if (['connect','change'].includes(message.operation)) contextConnected=true;
+      if (message.operation === 'disconnect') contextConnected=false;
+      return {ok:true,state:{active:contextActive,connected:contextConnected,folderName:'Synthetic Context',documentCount:contextActive && contextConnected ? 2 : 0,skipped:0,truncated:false}};
+    }
     if (message.operation === 'preferences') return {};
     if (message.operation === 'auto-start') return {start:true};
     calls.push(message);
@@ -93,11 +104,43 @@ load('extension/tests/ui.test.js');
   await button('Start over').listeners.click[0]();
   document.visibilityState='visible';
   const autoTimer=Array.from(environment.timers.values()).find(t=>t.delay===500);
+  contextConnected=false;
   const beforeAuto=calls.length;
+  await autoTimer.fn();
+  check(!calls.slice(beforeAuto).some(c=>c.channel==='seeforme-voice' && c.operation==='start'),'unconnected context waits for connection');
+  contextConnected=true;
   await autoTimer.fn();
   check(calls.slice(beforeAuto).some(c=>c.channel==='seeforme' && c.operation==='start'),'automatic start uses existing inspection flow');
   check(calls.slice(beforeAuto).some(c=>c.channel==='seeforme-voice' && c.operation==='start'),'automatic start uses existing native voice command');
   const afterAuto=calls.length;await autoTimer.fn();
   check(calls.length===afterAuto,'active session cannot auto-start again');
+  check(!button('Connect Context').hidden,'context connection is visible outside collapsed settings');
+  const pickerIndex=contextOps.length;
+  await button('Connect Context').listeners.click[0]();
+  check(contextOps[pickerIndex]==='connect','Connect Context opens native picker even with a remembered folder');
+  check(nodes.find(n=>n.className==='bottom-controls').hidden,'all controls below the audio bar are hidden');
+  await button('Connect Folder').listeners.click[0]();
+  check(contextOps.includes('connect') && button('Connect Folder').hidden,'Connect Folder uses native context bridge and shows connected controls');
+  await button('Refresh Context').listeners.click[0]();
+  check(contextOps.at(-1)==='refresh','Refresh Context is an explicit command');
+  await button('Change Folder').listeners.click[0]();
+  check(contextOps.includes('change'),'Change Folder uses the picker command');
+  await button('Turn SeeForMe OFF').listeners.click[0]();
+  check(contextOps.at(-1)==='off' && button('Refresh Context').disabled,'explicit OFF disables refresh');
+  check(button('Send answer').disabled && nodes.some(n=>n.textContent==='SeeForMe is OFF. Existing field values are preserved. Tap Talk to turn it ON.'),'OFF clears workflow UI without clearing page values');
+  await button('Disconnect').listeners.click[0]();
+  check(contextOps.at(-1)==='disconnect' && !button('Connect Folder').hidden,'Disconnect restores connection control');
+  await button('Connect Context').listeners.click[0]();
+  check(contextActive && button('Turn SeeForMe OFF') && !button('Refresh Context').disabled,'connecting while OFF displays the final activated context state');
+  holdOff=true;
+  const closing=button('Exit SeeForMe').listeners.click[0]();
+  check(nodes.find(n=>n.className==='assistant').hidden,'Exit hides immediately before native OFF acknowledgement');
+  check(calls.some(c=>c.channel==='seeforme-voice' && c.operation==='stop'),'Exit independently sends native voice stop');
+  const closedCalls=calls.length;await autoTimer.fn();
+  check(calls.length===closedCalls,'dismissed window cannot automatically restart');
+  releaseOff();await closing;holdOff=false;
+  check(!contextActive && nodes.find(n=>n.className==='assistant').hidden,'Exit turns SeeForMe OFF and hides the panel');
+  await listener({channel:'seeforme-voice',operation:'toolbar-start'},{id:'test-extension'});
+  check(!nodes.find(n=>n.className==='assistant').hidden,'Safari toolbar reopens the exited panel');
   print('PASS '+checks+' content/UI integration assertions');
 })().catch(e => {print('FAIL '+e.message);quit(1);});

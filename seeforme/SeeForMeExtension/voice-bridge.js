@@ -22,7 +22,7 @@
       const reply=await native(type,{...prefs,...extra});
       const ok=reply.type === 'VOICE_ACK' && reply.accepted === true;
       try {await browser.action.setBadgeText({text:ok ? '' : '!'});} catch (_) {}
-      return {ok,appLaunched:reply.appLaunched === true};
+      return {ok,appLaunched:reply.appLaunched === true,...(reply.error === 'UNSUPPORTED_LANGUAGE' ? {error:'The preferred language is not supported by this Mac’s on-device model.'} : {})};
     } catch (_) {return {ok:false};}
   }
   // Toolbar asks the page to inspect first, just like the in-page Talk control.
@@ -36,6 +36,8 @@
     if (msg.operation === 'auto-start') return (async () => {
       const id=sender.tab?.id;
       if (!Number.isInteger(id) || sender.frameId !== 0 || automaticTabs.has(id)) return {start:false};
+      const context=await native('LOCAL_CONTEXT',{operation:'cached-status'});
+      if (context.state?.explicitlyOff) return {start:false};
       const [active]=await browser.tabs.query({active:true,currentWindow:true});
       if (active?.id !== id || automaticTabs.has(id)) return {start:false};
       automaticTabs.add(id);

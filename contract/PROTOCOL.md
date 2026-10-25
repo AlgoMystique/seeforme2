@@ -472,3 +472,152 @@ The native microphone remains active during speech playback, using AVAudioEngine
 The content script requests an internal `seeforme-voice / auto-start` eligibility check on initial visible-page load. The background grants it once per active tab during its lifetime and the content script uses the existing inspect-then-VOICE_START flow. Background tabs do not start the microphone. Manual start remains available; task completion and hang-up do not automatically restart voice.
 
 Unsupported action requests receive a localized capability reply, such as “Sorry, I am not authorised to do that yet. I can explain this page and help fill supported forms.” They produce no actions. Read-only page explanations return `HOST_REPLY.status = ended` when generation succeeds; failures retain `needs_input`. On the native host, completed explanations, successful submission, and final review without an outstanding question end voice after the reply finishes playing. Pending form fields, optional questions and submission-confirmation questions keep the session open. Existing submission authorisation and DOM checks are unchanged.
+
+## 19. Local folder context (revision 1.10, additive; `v: 1`)
+
+SeeForMe has a global explicit ON/OFF activation separate from per-document form
+sessions and voice calls. Inspect/Talk turns it ON; ending voice, completing a task,
+`SESSION_RESET`, navigation, Safari restart and normal native process interruption
+do not turn it OFF. Only the explicit OFF control ends the activation. Automatic
+voice startup respects persisted explicit OFF; manual Talk may turn it back ON.
+
+### Native context control
+
+The extension background sends `{v:1,type:"LOCAL_CONTEXT",requestId:<UUID>,operation}`.
+Operations: `status`, `activate`, `off`, `connect`, `refresh`, `change`, `disconnect`.
+The host replies `{v:1,type:"CONTEXT_STATE",requestId,ok:<boolean>,changed?:<boolean>,state?,error?}`.
+`changed` reports whether the request changed the cached context revision; cancelling
+the picker leaves it false and does not invalidate pending form replies.
+`state` contains only `active`, `explicitlyOff`, `connected` (booleans), `folderName`
+(display basename), `documentCount`, `skipped` (integers), `truncated` and
+`permissionPersistent` (booleans), and `error` (fixed human-readable status or empty
+string). No paths, bookmark data, file contents or generated context excerpts enter
+these control replies. These messages do not alter existing form envelopes or action
+validation.
+
+Content → background uses the internal `seeforme-context` channel with the same
+sender/origin/top-frame validation as form requests. Only the background sends
+native messages. Connect/Change opens the native system directory picker in the
+background host; the user never needs its settings window. Cancellation preserves
+both the previous folder and snapshot. Requests have UUIDs; host receipts deduplicate
+re-delivery, including picker operations. A timeout never automatically retries an
+operation with a new ID and reports that the picker/request may remain pending.
+
+### Folder permission and snapshot lifetime
+
+The native host retains the system picker's read-only folder access while it runs.
+No original file is moved, copied or uploaded. The host alone reads source files.
+The project's existing signing configuration and entitlements are unchanged. If the
+host already has `com.apple.security.files.bookmarks.app-scope`, it saves a read-only
+security-scoped bookmark in its own preferences. Without that entitlement, the
+active text cache still survives Safari/native restarts, but rereading originals
+after the native host quits requires Connect/Change Folder again. Status reports
+`permissionPersistent: false` and the controls explain this limitation. An existing
+active snapshot is never discarded or silently reloaded because permission expired.
+
+On the transition OFF → ON it extracts once, with an activation UUID. A connected folder chosen while OFF is not read until ON.
+Connect/Change while ON and explicit Refresh are the only mid-activation reads.
+Even failed activation reads are not automatically retried: use Refresh/Change.
+There are no file watchers, per-turn rereads, navigation reloads or timed refreshes.
+
+The bounded extracted-text snapshot (not original documents) and ON/OFF state are
+persisted atomically in each native process's own sandbox under Application Support,
+excluded from backup. These local caches permit interrupted processes to resume
+without opening originals. No App Group, shared filesystem permission, new
+provisioning profile or signing change is needed. OFF clears both caches' document
+text and retains folder permission when available; Disconnect clears cached text,
+releases live folder access and removes any saved bookmark. Storage/permission
+failures report a fixed error without disclosing source paths.
+
+### Existing native bridge cache transfer
+
+Content-free control notifications reach the native host through the existing
+local relay. The host publishes bounded `CONTEXT_CACHE_PART` pushes with
+`{v:1,type,requestId,sequence,index,total,chunk}` through the existing Safari native
+push port. `chunk` is base64-encoded JSON snapshot data, at most 16 KiB decoded per
+part, up to 128 parts/2 MiB. The background validates and relays these parts directly
+back through `sendNativeMessage`; no cache data is sent to tabs/content scripts,
+rendered in DOM, stored in JavaScript/browser storage, logged or uploaded.
+The native handler acknowledges each part with
+`{v:1,type:"CONTEXT_CACHE_ACK",requestId,accepted,complete?}`.
+
+A native inbox validates bounds, UUIDs, receipt IDs, activation state and total
+extracted text before replacing the native extension cache. Parts may arrive out of
+order or repeat. Partial transfers never replace the cache; assembly expires after
+30 seconds and is bounded to four transfers. A durable increasing `sequence`
+rejects delayed pre-OFF/pre-Disconnect snapshots. Only full snapshots with the
+request's receipt complete the original control request. Lost push delivery causes
+re-publication of the same cached snapshot; it never opens source files again.
+The local bridge is used for status as well so restored processes reconcile
+persisted ON/OFF state before automatic startup.
+
+Initial scope: immediate visible folder children, PDF text, UTF-8 TXT/MD/Markdown,
+and native DOCX text import. No OCR, recursion, packages, symlinks or cloud-placeholder
+downloads. Up to 50 supported files, 10 MiB per file, 500 pages per PDF, and 200,000
+extracted characters total. Encrypted/unreadable/empty/oversized files are skipped;
+the UI reports skipped files and truncation. Each reasoning request selects at most
+6,000 characters from the cached text using local paragraph/word matching.
+
+### Grounding and privacy
+
+Documents are untrusted reference material, never instructions, agreement or
+submission permission. Only an explicit user request to use their context can
+supply document-backed form answers or grounded generated descriptions. Source
+quotes must occur in the cached excerpt. Identity validation, existing-value
+protection, option validation and section 10 submission confirmation remain intact.
+Documents cannot authorize checkbox consent. Context changes invalidate pending
+fill replies and submission questions; the user repeats the request against the
+new snapshot. Values filled into a website become accessible to that website.
+
+Context speech is opt-in. The native host persists `contextSpeechConsent` and
+transfers optional `allowRemoteSpeech` in its private snapshot (absent means false).
+`allow-speech` / `private-speech` are content-free LOCAL_CONTEXT controls; status
+returns `allowRemoteSpeech`. Revocation stops voice immediately. Without consent,
+question/message text is redacted before the voice pipeline. With consent, spoken
+context-derived replies may go to ElevenLabs through the existing voice pipeline.
+Original files and cached excerpts are never uploaded. Page explanation streaming
+stays disabled while context is connected. No context or transcript is logged.
+
+The cloud requests context before automatic voice startup. Connect opens the native
+picker directly, activates the cached context, inspects the form and starts voice.
+The initial native question offers to fill from context. A short affirmative answer
+answers that specific offer and authorizes grounded filling, never submission.
+An explicit preferred-language line in cached TXT/Markdown/PDF/DOCX text sets the
+conversation language independently of the form language. Unsupported languages
+are reported, not silently sent to a remote model. Conflicting preferences are not
+guessed. The existing safe field-language translation and identifier rules apply.
+
+### Speech transcription display
+
+Native `VOICE_TRANSCRIPT` pushes have `{v:1,type:"VOICE_TRANSCRIPT",role,text}`;
+role is `user` or `assistant`, with bounded text (4000 characters). User text is
+emitted after actual STT; assistant text is emitted when actual playback begins.
+Background routes these display-only events to the active existing document
+session. They never create a session, execute actions, or enter browser storage.
+The black panel shows these events only, plus form progress. Workflow questions,
+processing messages and typing instructions are not transcripts. Native voice
+state and measured audio levels continue to drive the cloud independently.
+
+Context commands return `pending:true` immediately after dispatch when their receipt is absent. Background sends separate `poll` requests with the same request ID, and retries the deduplicated command every two seconds, bounded to two minutes. The native command must not hold a request open waiting for a cache that itself returns via native messaging. `cached-status` is a native-only read used after reconciliation by automatic voice startup.
+
+
+### Bengali ElevenLabs reasoning (explicit prototype authorization)
+
+Bengali (`bn`) conversation now uses a private ElevenLabs text-only Agent via native
+signed WebSocket sessions. The existing native Keychain credential never enters
+JavaScript. Apple reasoning remains the route for other languages. Only the current
+utterance, current question, eligible field metadata (no current values), and up to
+six matching 300-character context snippets are sent. No document or original file
+is uploaded. Unrelated profile facts are excluded; no excerpts are sent for greeting
+translation. A bounded page extract is sent only for a requested page explanation.
+The agent has voice recording disabled and retention_days=0. Native networking uses
+an ephemeral URLSession. Local source access, caching and ON/OFF semantics do not change.
+
+Returned values are proposals only. The Mac validates field IDs, exact source evidence,
+identity preservation, field constraints and existing values before normal DOM fill.
+Descriptive answers are translated into each field/form language independently of
+Bengali conversation. A Bengali affirmative to the context offer never authorizes
+submission. Bengali audio uses Eleven v3 through the existing speech pipeline; other
+speech retains Flash v2.5. Scribe remains the transcription provider. The Safari native
+extension needs outgoing-network capability to contact ElevenLabs; signing identity,
+team, app groups and the JavaScript permissions remain unchanged.

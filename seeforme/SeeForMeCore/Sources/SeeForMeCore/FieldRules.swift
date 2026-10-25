@@ -5,7 +5,7 @@ enum FieldRules {
 
     static func isName(_ field: FormField) -> Bool {
         if ["name", "given-name", "family-name", "additional-name"].contains(field.autocomplete ?? "") { return true }
-        return ["name", "姓名", "名字", "姓氏", "nom", "nombre"].contains { field.label.lowercased().contains($0) }
+        return ["name", "名前", "氏名", "お名前", "নাম", "姓名", "名字", "姓氏", "nom", "nombre"].contains { field.label.lowercased().contains($0) }
     }
 
     /// Short spoken names can be transcribed in an unrelated script. Ask for spelling
@@ -21,6 +21,7 @@ enum FieldRules {
         case "ru", "uk", "bg": scripts = "\\p{Cyrillic}\\p{Latin}"
         case "hi": scripts = "\\p{Devanagari}\\p{Latin}"
         case "el": scripts = "\\p{Greek}\\p{Latin}"
+        case "bn": scripts = "\\p{Bengali}\\p{Latin}"
         case "ta": scripts = "\\p{Tamil}\\p{Latin}"
         default: scripts = "\\p{Latin}"
         }
@@ -33,7 +34,7 @@ enum FieldRules {
         let identity = ["name", "given-name", "family-name", "organization", "street-address", "address-line1", "address-line2", "postal-code", "username"]
         if identity.contains(field.autocomplete ?? "") { return true }
         let label = field.label.lowercased()
-        return ["name", "address", "email", "phone", "姓名", "名字", "姓氏", "地址", "nom", "adresse", "nombre", "dirección"].contains { label.contains($0) }
+        return ["name", "名前", "氏名", "নাম", "住所", "ঠিকানা", "address", "email", "phone", "姓名", "名字", "姓氏", "地址", "nom", "adresse", "nombre", "dirección"].contains { label.contains($0) }
     }
 
     // MARK: Normalisation

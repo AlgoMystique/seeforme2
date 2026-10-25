@@ -8,7 +8,7 @@ import os.log
 /// and answers each with one HOST_REPLY (contract/PROTOCOL.md).
 final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
     /// One engine per extension process, so sessions survive between requests while the process lives.
-    private static let engine = FormEngine(conversation: LocalConversationReasoner())
+    private static let engine = FormEngine(conversation: SeeForMeConversationReasoner(), contextProvider: { LocalContextBridge.snapshot() })
     private static let log = Logger(subsystem: "com.seeforme.app.extension", category: "native-messaging")
 
     func beginRequest(with context: NSExtensionContext) {
@@ -17,9 +17,41 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
         // Never log message contents: they can include page labels and user answers.
         let data = JSONSerialization.isValidJSONObject(message) ? try? JSONSerialization.data(withJSONObject: message) : nil
 
-        struct Envelope: Decodable { var v: Int?; var type: String; var requestId: String?; var conversationLanguage: String?; var voiceId: String?; var utteranceId: String? }
+        struct Envelope: Decodable { var v: Int?; var type: String; var requestId: String?; var conversationLanguage: String?; var voiceId: String?; var utteranceId: String?; var operation: String? }
         let envelope = data.flatMap { try? JSONDecoder().decode(Envelope.self, from: $0) }
         let requestType = envelope?.type
+
+        if requestType == "CONTEXT_CACHE_PART" {
+            guard let data, data.count <= 48_000,
+                  let part = try? JSONDecoder().decode(LocalContextTransfer.Part.self, from: data), part.valid else {
+                let response = NSExtensionItem()
+                response.userInfo = [SFExtensionMessageKey: ["v": 1, "type": "CONTEXT_CACHE_ACK", "requestId": envelope?.requestId ?? "", "accepted": false]]
+                context.completeRequest(returningItems: [response], completionHandler: nil)
+                return
+            }
+            Task {
+                let reply = await LocalContextBridge.receive(part)
+                let response = NSExtensionItem(); response.userInfo = [SFExtensionMessageKey: reply]
+                context.completeRequest(returningItems: [response], completionHandler: nil)
+            }
+            return
+        }
+
+        if requestType == "LOCAL_CONTEXT" {
+            guard envelope?.v == 1, let id = envelope?.requestId, UUID(uuidString: id) != nil,
+                  let operation = envelope?.operation, LocalContextBridge.operations.contains(operation) else {
+                let response = NSExtensionItem()
+                response.userInfo = [SFExtensionMessageKey: ["v": 1, "type": "CONTEXT_STATE", "requestId": envelope?.requestId ?? "", "ok": false]]
+                context.completeRequest(returningItems: [response], completionHandler: nil)
+                return
+            }
+            Task {
+                let reply = await LocalContextBridge.request(operation: operation, requestId: id)
+                let response = NSExtensionItem(); response.userInfo = [SFExtensionMessageKey: reply]
+                context.completeRequest(returningItems: [response], completionHandler: nil)
+            }
+            return
+        }
 
         if requestType == "VOICE_OPTIONS", envelope?.v == 1 {
             let response = NSExtensionItem()
@@ -33,13 +65,15 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             return
         }
         if let command = requestType.flatMap(VoiceCommand.init(rawValue:)) {
-            let valid = envelope?.v == 1 && UUID(uuidString: envelope?.requestId ?? "") != nil
+            let local = LocalContextBridge.snapshot()
+            let valid = !(command == .start && local.explicitlyOff) && envelope?.v == 1 && UUID(uuidString: envelope?.requestId ?? "") != nil
                 && (envelope?.conversationLanguage.map(ConversationLanguage.supported) ?? true)
                 && (envelope?.voiceId.map(VoicePreferences.validVoice) ?? true)
             guard valid else {
                 let response = NSExtensionItem()
                 response.userInfo = [SFExtensionMessageKey: ["v": 1, "type": "VOICE_ACK",
-                    "requestId": envelope?.requestId ?? "", "accepted": false, "appLaunched": false]]
+                    "requestId": envelope?.requestId ?? "", "accepted": false, "appLaunched": false,
+                    "error": envelope?.conversationLanguage.map({ !ConversationLanguage.supported($0) }) == true ? "UNSUPPORTED_LANGUAGE" : "VOICE_UNAVAILABLE"]]
                 context.completeRequest(returningItems: [response], completionHandler: nil)
                 return
             }
@@ -54,12 +88,23 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
 
         let started = ContinuousClock.now
         Task {
+            let before = LocalContextBridge.snapshot()
             let reply = await Self.engine.handle(data: data ?? Data())
             Diagnostics.record("ext.request", ["type": requestType ?? "-", "status": reply.status.rawValue, "actions": "\(reply.actions.count)",
                                                "hasQuestion": "\(reply.question != nil)", "error": reply.errorCode?.rawValue ?? "-",
                                                "ms": Diagnostics.ms(since: started)])
             Self.log.info("reply status=\(reply.status.rawValue, privacy: .public) actions=\(reply.actions.count) error=\(reply.errorCode?.rawValue ?? "-", privacy: .public)")
-            HostReplyBroadcast.post(reply, requestType: requestType, utteranceId: envelope?.utteranceId)
+            // When local context is connected, never broadcast potentially derived text to
+            // the cloud voice pipeline (nor other local notification observers).
+            let local = LocalContextBridge.snapshot()
+            if (before.active && before.connected) || (local.active && local.connected) {
+                var policy = before.active && before.connected ? before : local
+                policy.allowRemoteSpeech = before.allowRemoteSpeech == true && local.allowRemoteSpeech == true
+                let safe = policy.voiceSafe(reply)
+                HostReplyBroadcast.post(safe, requestType: requestType, utteranceId: envelope?.utteranceId)
+            } else {
+                HostReplyBroadcast.post(reply, requestType: requestType, utteranceId: envelope?.utteranceId)
+            }
 
             let response = NSExtensionItem()
             response.userInfo = [SFExtensionMessageKey: reply.jsonObject()]

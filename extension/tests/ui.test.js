@@ -6,7 +6,7 @@ class Node {
   constructor(tag,doc) {this.tagName=tag;this.doc=doc;this.children=[];this.attributes={};this.dataset={};this.style={};this.listeners={};this.hidden=false;this.disabled=false;this.value='';this.textContent='';this.isConnected=true;this.rect={left:700,right:1020,top:400,bottom:760,width:320,height:360};}
   setAttribute(key,value) {this.attributes[key]=String(value);}
   getAttribute(key) {return this.attributes[key] ?? null;}
-  append(...nodes) {for (const node of nodes) {node.parent=this;this.children.push(node);}}
+  append(...nodes) {for (const node of nodes) {if(node.parent)node.parent.children=node.parent.children.filter(child=>child!==node);node.parent=this;this.children.push(node);}}
   replaceChildren(...nodes) {this.children=[];this.append(...nodes);}
   attachShadow() {this.shadow=new Node('#shadow',this.doc);return this.shadow;}
   contains(node) {return node === this || this.children.some(child => child.contains(node));}
@@ -15,7 +15,7 @@ class Node {
   fire(type,event={}) {for (const fn of this.listeners[type] || []) fn(event);}
   click() {if (!this.disabled) this.fire('click',{target:this});}
   focus() {this.doc.activeElement=this;}
-  remove() {this.isConnected=false;}
+  remove() {this.isConnected=false;if(this.parent)this.parent.children=this.parent.children.filter(child=>child!==this);}
   getBoundingClientRect() {return this.rect;}
   matches() {return ['input','textarea','select'].includes(this.tagName);}
 }
@@ -113,9 +113,42 @@ try {
   assert(ui.input.value === draft,'visual reset does not mutate workflow-owned input');
   ui.dispose();assert(!ui.host.isConnected && !f.doc.listeners.focusin.length && !f.timers.size,'visual lifecycle cleans listeners and timers');
   const css=f.ui.host.shadow.children[0].textContent;
-  assert(css.includes('prefers-reduced-motion: reduce') && css.includes('animation: none !important'),'reduced motion styling');
+  assert(css.includes('prefers-reduced-motion: reduce') && /animation:\s*none !important/.test(css),'reduced motion styling');
   assert(css.includes('forced-colors: active') && css.includes('100dvh'),'high contrast and viewport bounds');
   function luminance(hex) {const rgb=hex.match(/\w\w/g).map(c => parseInt(c,16)/255).map(c => c <= .04045 ? c/12.92 : ((c+.055)/1.055)**2.4);return rgb[0]*.2126+rgb[1]*.7152+rgb[2]*.0722;}
-  for (const [foreground,background] of [['242d2c','fffefa'],['5e6b68','fffefa'],['fffefa','24665f'],['637168','f6f7f2']]) {const a=luminance(foreground),b=luminance(background);assert((Math.max(a,b)+.05)/(Math.min(a,b)+.05) >= 4.5,'text contrast '+foreground);}
+  for (const [foreground,background] of [['14171f','ffffff'],['626775','ffffff'],['f8f8fb','1b1c1f'],['bfc0c8','1b1c1f']]) {const a=luminance(foreground),b=luminance(background);assert((Math.max(a,b)+.05)/(Math.min(a,b)+.05) >= 4.5,'text contrast '+foreground);}
+  const design=fixture(), d=design.ui;
+  const get=cls=>design.all().find(n=>(n.className || n.getAttribute('class') || '').split(' ').includes(cls));
+  assert(get('cloud-silhouette').children[0].getAttribute('d').includes('C'),'cloud is a curved SVG silhouette');
+  assert(get('cloud-label').textContent==='Please connect context' && d.panel.dataset.voice==='idle','idle cloud has no invented audio state');
+  assert(get('audio-panel').children.includes(d.voiceButton),'Talk uses the existing button inside its separate audio panel');
+  assert(design.all().some(n=>n.getAttribute('aria-label')==='Connect Context'),'approved context button is present');
+  d.renderContext({ok:true,state:{active:true,connected:true,documentCount:1}});
+  d.renderState({state:'processing'},{started:true});
+  assert(get('cloud-label').textContent==='Ready to help','form processing cannot simulate native thinking');
+  const native=state=>({v:1,type:'VOICE_STATE',state,instanceId:'00000000-0000-4000-8000-000000000005',seq:++voiceSeq,ttlMs:15000,level:.8});
+  d.setVoiceState(native('listening'));
+  assert(get('cloud-label').textContent==='I’m listening...' && d.panel.dataset.voice==='listening','native listening drives cloud label and glow state');
+  const loud=get('cloud-bars').children[2].style.height;
+  d.setVoiceState({...native('listening'),level:0});
+  assert(parseFloat(get('cloud-bars').children[2].style.height)<parseFloat(loud),'cloud waveform follows measured audio level, including silence');
+  d.setVoiceState(native('thinking'));
+  assert(get('cloud-label').textContent==='Let me think...' && d.panel.dataset.voice==='thinking','native thinking drives processing dots');
+  d.setVoiceState(native('speaking'));
+  assert(get('cloud-label').textContent==='Speaking...' && d.panel.dataset.voice==='speaking','native speaking drives peach waveform state');
+  d.clearVoiceState();assert(get('cloud-label').textContent==='Ready to help','cloud returns to calm idle on disconnect');
+  d.renderState({state:'needs_input',question:{text:'Synthetic question?',fieldIds:[]},message:'Synthetic explanation.'},{started:true});
+  d.appendUserMessage('Synthetic typed answer');
+  assert(get('user-message').children[1].children[0].textContent==='Synthetic typed answer','history shows actual typed answer');
+  assert(!get('assistant-message'),'workflow questions never become transcripts');
+  d.appendTranscript('assistant','Actual spoken words');
+  assert(get('assistant-message').children[1].children[0].textContent==='Actual spoken words','native speech populates transcription');
+  d.renderState({state:'processing'},{started:true});
+  d.renderState({state:'needs_input',question:{text:'Next synthetic question?',fieldIds:[]}},{started:true});
+  const rowsBefore=design.all().filter(n=>n.className==='message user-message').length;
+  d.setVoiceState(native('listening'));
+  assert(design.all().filter(n=>n.className==='message user-message').length===rowsBefore,'voice activity never fabricates a user transcript');
+  d.resetVisual();assert(!get('user-message') && !get('assistant-message'),'reset clears transient display history');
+  d.dispose();
   print('PASS '+count+' visual behavior assertions');
 } catch(e) {print('FAIL '+e.message);quit(1);}

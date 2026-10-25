@@ -3,7 +3,7 @@
   'use strict';
   function start(browser, crypto, clock=globalThis) {
     const P = root.SeeForMeProtocol, sessions = new Map(), replySources = new WeakMap();
-    let port;
+    let port, contextEpoch=0;
     let lastVoice = null, voiceInstance = null, voiceSeq = -1, voiceTimer, voiceTarget = null, voiceRevision = 0;
     const voiceRouteId = crypto.randomUUID();
     let voiceDisposed = false;
@@ -100,6 +100,11 @@
     }
     async function handle(tabId,s,res,depth=0,confirming=false) {
       if (!current(tabId,s)) return;
+      if (s.contextEpoch !== contextEpoch) {
+        s.awaitingSubmitConfirmation=false;
+        await emit(tabId,s,{operation:'state',state:'needs_input',message:'Local context changed. Please repeat your request.'});
+        return;
+      }
       if (depth > 3) throw Error('HOST_ACTION_LOOP');
       if (res.status === 'submit') return submit(tabId,s,res,confirming);
       s.awaitingSubmitConfirmation = false;
@@ -134,7 +139,7 @@
       // Typed requests report busy; app/voice pushes queue bounded turns and recapture before each.
       if (s.finished) return Promise.resolve({error:'SESSION_ENDED'});
       if (s.busy) return Promise.resolve({error:'BUSY'});
-      s.busy = true;
+      s.busy = true; s.contextEpoch=contextEpoch;
       return (async () => {try { return await task(); } catch (_) {await emit(tabId,s,{operation:'state',state:'error',message:'Could not complete that step. Try again or start over.'}).catch(() => {}); return {error:'REQUEST_FAILED'};} finally {s.busy=false;const next=s.queued?.shift();if (next && current(tabId,s)) void utterance(tabId,next.text,next.source,false,next.utteranceId);} })();
     }
     async function requestWithRecovery(s,type,payload,confirming=false) {
@@ -155,6 +160,7 @@
         await emit(tabId,s,{operation:'state',state:'ready_for_review',question:s.confirmationQuestion,message:'Please review the form and answer the submission question now.'});
         return {error:'FRESH_CONFIRMATION_REQUIRED'};
       }
+      const contextChanged=s.contextEpoch !== contextEpoch;
       return queue(tabId,s,async () => {
         const confirming = s.awaitingSubmitConfirmation === true;
         s.awaitingSubmitConfirmation = false;
@@ -167,10 +173,40 @@
         if (refresh.status === 'error') return handle(tabId,s,refresh);
         if (refresh.actions.length) await handle(tabId,s,refresh);
         if (!current(tabId,s)) return;
+        if (contextChanged && s.awaitingSubmitConfirmation) return {ok:true}; // The new review needs a fresh answer.
         const res = await requestWithRecovery(s,'USER_UTTERANCE',{text,source,...(utteranceId ? {utteranceId} : {})},confirming);
         await handle(tabId,s,res,0,confirming);
         return {ok:true};
       });
+    }
+    async function contextRequest(operation) {
+      const requestId=crypto.randomUUID();
+      const attempts=['connect','change'].includes(operation) ? 600 : 60;
+      for (let attempt=0;attempt<attempts;attempt++) {
+        const reply=await deadline(browser.runtime.sendNativeMessage('com.seeforme.app',{v:1,type:'LOCAL_CONTEXT',requestId,operation:attempt % 10 === 0 ? operation : 'poll'}),10000);
+        if (reply?.v !== 1 || reply.type !== 'CONTEXT_STATE' || reply.requestId !== requestId || typeof reply.ok !== 'boolean') throw Error('BAD_CONTEXT_REPLY');
+        if (reply.pending !== true) return {...reply,changed:reply.ok && ['off','connect','refresh','change','disconnect'].includes(operation)};
+        await new Promise(resolve=>clock.setTimeout(resolve,200));
+      }
+      throw Error('CONTEXT_TIMEOUT');
+    }
+
+    async function contextListener(msg,sender) {
+      if (sender.id !== browser.runtime.id || !Number.isInteger(sender.tab?.id) || sender.frameId !== 0 || sender.url !== sender.tab.url) return;
+      try {if (!P.originAllowed(new URL(sender.url).origin)) return;} catch (_) {return;}
+      if (!['status','activate','off','connect','refresh','change','disconnect','allow-speech','private-speech'].includes(msg.operation)) return;
+      try {
+        const reply=await contextRequest(msg.operation);
+        if (reply.ok && reply.changed === true && ['off','connect','refresh','change','disconnect'].includes(msg.operation)) {
+          contextEpoch++;
+          for (const session of sessions.values()) session.awaitingSubmitConfirmation=false;
+        }
+        // Explicit OFF ends workflows across tabs, without touching values already filled.
+        if (msg.operation === 'off' && reply.ok) {
+          await Promise.all([...sessions.keys()].map(id => reset(id)));
+        }
+        return reply;
+      } catch (_) {return {ok:false,error:'Could not reach local context. Try reopening these controls.'};}
     }
     async function listener(msg,sender) {
       if (msg?.channel !== 'seeforme' || sender.id !== browser.runtime.id || !Number.isInteger(sender.tab?.id) || sender.frameId !== 0) return;
@@ -183,7 +219,7 @@
         if (!msg.context || msg.context.documentId !== msg.documentId || !Number.isInteger(msg.context.revision) || typeof msg.documentId !== 'string' || !msg.snapshot) return;
         const s={id:crypto.randomUUID(),url:sender.tab.url,documentId:msg.documentId,context:msg.context,snapshot:{...msg.snapshot,pageOrigin:origin},busy:false};
         sessions.set(tabId,s);
-        return queue(tabId,s,async () => { await handle(tabId,s,await send(s,'FORM_SNAPSHOT',s.snapshot)); if (lastVoice) await routeVoice(); return {ok:true}; });
+        return queue(tabId,s,async () => { await contextRequest('activate'); if (!current(tabId,s)) return; await handle(tabId,s,await send(s,'FORM_SNAPSHOT',s.snapshot)); if (lastVoice) await routeVoice(); return {ok:true}; });
       }
       const s=sessions.get(tabId);
       if (!s || s.documentId !== msg.documentId) return;
@@ -195,6 +231,25 @@
       try {
         port=browser.runtime.connectNative('com.seeforme.app');
         port.onMessage.addListener(async raw => {
+          const cache=raw?.name === 'seeforme' ? raw.userInfo : raw;
+          if (cache?.type === 'CONTEXT_CACHE_PART') {
+            // Native-only relay: never send context into tabs, DOM, storage or logs.
+            if (cache.v !== 1 || typeof cache.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(cache.requestId) ||
+                !Number.isSafeInteger(cache.sequence) || cache.sequence < 1 || !Number.isInteger(cache.index) ||
+                !Number.isInteger(cache.total) || cache.total < 1 || cache.total > 128 || cache.index < 0 || cache.index >= cache.total ||
+                typeof cache.chunk !== 'string' || cache.chunk.length > 21848) return;
+            try {
+              await browser.runtime.sendNativeMessage('com.seeforme.app',{v:1,type:'CONTEXT_CACHE_PART',requestId:cache.requestId,
+                sequence:cache.sequence,index:cache.index,total:cache.total,chunk:cache.chunk});
+            } catch (_) { /* The original native command reports a delivery timeout. */ }
+            return;
+          }
+          if (cache?.v === 1 && cache.type === 'VOICE_TRANSCRIPT' && ['assistant','user'].includes(cache.role) && typeof cache.text === 'string' && cache.text.length <= 4000) {
+            const [tab]=await browser.tabs.query({active:true,currentWindow:true});
+            const s=tab && sessions.get(tab.id);
+            if (s) await emit(tab.id,s,{operation:'transcript',role:cache.role,text:cache.text});
+            return;
+          }
           const activity=P.voiceState(raw);
           if (activity) return receiveVoiceState(activity);
           const input=P.push(raw); if (!input) return;
@@ -215,6 +270,7 @@
     const onMessage=(msg,sender) => {
       // Returning even an empty Promise claims the response in Safari. Leave
       // voice messages entirely to voice-bridge.js.
+      if (msg?.channel === 'seeforme-context') {connect();return contextListener(msg,sender);}
       if (msg?.channel !== 'seeforme') return;
       connect(); return listener(msg,sender);
     };

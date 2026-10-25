@@ -22,6 +22,7 @@ final class AppModel {
     var selfTestResult: String?
     let voice: VoiceModel
 
+    @ObservationIgnored private var contextController: LocalContextController?
     @ObservationIgnored private var observer: NSObjectProtocol?
     @ObservationIgnored private var commandObserver: NSObjectProtocol?
     @ObservationIgnored private let callBar: CallBarController
@@ -48,6 +49,11 @@ final class AppModel {
         }
         voice.sendUtterance = { [weak self] text, utteranceId, delivered in
             self?.send(text, source: "voice", utteranceId: utteranceId, delivered: delivered)
+        }
+        contextController = LocalContextController()
+        voice.onTranscript = { role, text in
+            SFSafariApplication.dispatchMessage(withName: "seeforme", toExtensionWithIdentifier: Self.extensionIdentifier,
+                userInfo: ["v": 1, "type": "VOICE_TRANSCRIPT", "role": role, "text": String(text.prefix(4000))]) { _ in }
         }
         voice.onStateChange = { [weak self] state in self?.publishVoiceState(state) }
         voice.onLevel = { [weak self] level in self?.publishLevel(level) }
@@ -77,7 +83,9 @@ final class AppModel {
         case .start:
             guard !voice.isOn else { return Diagnostics.record("app.command.ignored", ["reason": "alreadyOn"]) }
             Task {
-                await voice.start(currentQuestion: latest?.question)
+                let context = try? LocalContextStore.local().read()
+                let connected = context?.active == true && context?.connected == true
+                await voice.start(currentQuestion: latest?.question, includeGreeting: !connected)
                 // Setup problems (no key, microphone off) need the settings window to fix.
                 if case .error = voice.state { showWindow() }
             }

@@ -7,7 +7,7 @@ import sys
 
 root = Path(__file__).resolve().parents[2]
 jsc = '/System/Library/Frameworks/JavaScriptCore.framework/Versions/A/Helpers/jsc'
-suites = ['dom.test.js', 'protocol.test.js', 'content-ui.test.js', 'submission.test.js', 'session-submission.test.js', 'voice-state.test.js', 'voice-preferences.test.js']
+suites = ['dom.test.js', 'protocol.test.js', 'content-ui.test.js', 'submission.test.js', 'session-submission.test.js', 'voice-state.test.js', 'voice-preferences.test.js', 'local-context.test.js']
 total = 0
 for suite in suites:
     result = subprocess.run([jsc, 'extension/tests/' + suite], cwd=root, text=True, capture_output=True, timeout=30)

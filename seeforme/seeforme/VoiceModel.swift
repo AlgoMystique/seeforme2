@@ -60,6 +60,7 @@ final class VoiceModel {
     static let silence = [Float](repeating: 0, count: 6)
 
     /// Whether `levels` currently reflects live audio.
+    var onTranscript: ((String, String) -> Void)?
     var hasAudio: Bool { [.listening, .hearing, .speaking].contains(state) }
     /// ElevenLabs usage since the app launched, and the running total kept across launches (numbers only).
     private(set) var usage = VoiceUsage()
@@ -124,7 +125,7 @@ final class VoiceModel {
 
     // MARK: Session
 
-    func start(currentQuestion: String?) async {
+    func start(currentQuestion: String?, includeGreeting: Bool = true) async {
         let key = KeychainStore.load()
         Diagnostics.record("voice.start", ["keyFound": "\(key != nil)", "hasQuestion": "\(currentQuestion != nil)"])
         guard let key else {
@@ -158,12 +159,12 @@ final class VoiceModel {
         state = .preparingSpeech
         lastQuestion = nil
         pendingSpeech = nil
-        var greeting = Self.greeting
-        if !ConversationLanguage.same(conversationLanguage, "en") {
-            do { greeting = try await LocalConversationReasoner().translate(Self.greeting, language: conversationLanguage) }
+        var greeting = includeGreeting ? Self.greeting : ""
+        if includeGreeting && !ConversationLanguage.same(conversationLanguage, "en") {
+            do { greeting = try await SeeForMeConversationReasoner().translate(Self.greeting, language: conversationLanguage) }
             catch { state = .error("This language is unavailable. Choose a supported language in Safari."); return resumeAfterError() }
         }
-        let text = [greeting, currentQuestion].compactMap { $0 }.joined(separator: " ")
+        let text = [greeting, currentQuestion].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
         await say(VoiceTurn.Speech(text: text, question: currentQuestion))
     }
 
@@ -296,6 +297,7 @@ final class VoiceModel {
         Diagnostics.record("voice.stt", ["ok": "true", "empty": "\(text.isEmpty)", "audioMs": "\(audio.count / 32)", "ms": Diagnostics.ms(since: sttStart)])
         guard isOn else { return }
         guard !text.isEmpty else { return listen() }
+        onTranscript?("user", text)
         lastHeard = text
         state = .thinking
         awaitingReply = true
@@ -339,6 +341,7 @@ final class VoiceModel {
         do {
             try await player.playStream(client.speechStream(speech.text)) { [weak self] in
                 guard let self, self.voiceEpoch == epoch, self.isOn, !self.muted else { return }
+                self.onTranscript?("assistant", speech.text)
                 self.state = .speaking
                 Diagnostics.record("voice.firstAudio", ["ms": Diagnostics.ms(since: ttsStart)])
             }

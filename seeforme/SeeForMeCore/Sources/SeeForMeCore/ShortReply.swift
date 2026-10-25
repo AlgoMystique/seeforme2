@@ -14,8 +14,8 @@ enum ShortReply: Equatable {
     init?(_ text: String) {
         let clean = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
         // Exact short phrases only: negation or an explanation must never become consent.
-        let yes: Set<String> = ["是", "是的", "好的", "同意", "确认", "确认提交", "確認提交", "oui", "sí", "sim", "ja", "sì", "はい", "네", "예", "vâng", "đồng ý", "हाँ", "हां", "evet", "ya", "да", "نعم", "d’accord", "d'accord"]
-        let no: Set<String> = ["不", "不是", "不要", "不同意", "不要提交", "不提交", "non", "não", "nein", "いいえ", "아니요", "không", "नहीं", "nee", "nej", "nei", "hayır", "tidak", "нет", "لا"]
+        let yes: Set<String> = ["হ্যাঁ", "হ্যা", "জি", "হ্যাঁ করুন", "是", "是的", "好的", "同意", "确认", "确认提交", "確認提交", "oui", "sí", "sim", "ja", "sì", "はい", "네", "예", "vâng", "đồng ý", "हाँ", "हां", "evet", "ya", "да", "نعم", "d’accord", "d'accord"]
+        let no: Set<String> = ["না", "না ধন্যবাদ", "不", "不是", "不要", "不同意", "不要提交", "不提交", "non", "não", "nein", "いいえ", "아니요", "không", "नहीं", "nee", "nej", "nei", "hayır", "tidak", "нет", "لا"]
         let skip: Set<String> = ["跳过", "跳過", "略过", "passer", "saltar", "überspringen", "スキップ", "건너뛰기", "bỏ qua"]
         let done: Set<String> = ["完成", "填完了", "terminé", "terminado", "fertig", "完了", "완료", "xong"]
         if yes.contains(clean) { self = .yes; return }

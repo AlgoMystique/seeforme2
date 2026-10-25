@@ -112,7 +112,7 @@ public struct ElevenLabsClient: Sendable {
         request.httpMethod = "POST"
         request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text, "model_id": "eleven_flash_v2_5"])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["text": text, "model_id": text.unicodeScalars.contains(where: { (0x0980...0x09FF).contains($0.value) }) ? "eleven_v3" : "eleven_flash_v2_5"])
         return request
     }
 

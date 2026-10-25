@@ -22,7 +22,8 @@ function fixture(){
   const timers=new Map(),queries=[],requests=[],messages=[],urls=new Map([[1,'https://example.test/form-one'],[2,'https://example.test/form-two'],[3,'https://example.test/no-session']]);
   const clock={now:()=>time,setTimeout(fn,delay){timers.set(++timerId,{at:time+delay,fn});return timerId;},clearTimeout(id){timers.delete(id);}};
   const port={onMessage:event(),onDisconnect:event(),disconnect(){}};
-  const browser={runtime:{id:'extension',onMessage:event(),connectNative:()=>port,async sendNativeMessage(app,req){requests.push(req);return {v:1,type:'HOST_REPLY',sessionId:req.sessionId,requestId:req.requestId,status:'needs_input',actions:[],modelAvailable:true,question:{text:'Your answer?',fieldIds:['f1']}};}},tabs:{onUpdated:event(),onRemoved:event(),onActivated:event(),get:async id=>({id,url:urls.get(id)}),query:()=>holdQueries?new Promise(resolve=>queries.push(resolve)):Promise.resolve([{id:active}]),async sendMessage(id,message){messages.push({id,...message});if(message.operation==='capture')return {context:{documentId:'document-'+id,revision:1},snapshot:{pageOrigin:'https://example.test',fields:[]}};}},windows:{onFocusChanged:event()}};
+  const browser={runtime:{id:'extension',onMessage:event(),connectNative:()=>port,async sendNativeMessage(app,req){if (req.type === 'LOCAL_CONTEXT') return {v:1,type:'CONTEXT_STATE',requestId:req.requestId,ok:true,state:{active:true,connected:false}};
+requests.push(req);return {v:1,type:'HOST_REPLY',sessionId:req.sessionId,requestId:req.requestId,status:'needs_input',actions:[],modelAvailable:true,question:{text:'Your answer?',fieldIds:['f1']}};}},tabs:{onUpdated:event(),onRemoved:event(),onActivated:event(),get:async id=>({id,url:urls.get(id)}),query:()=>holdQueries?new Promise(resolve=>queries.push(resolve)):Promise.resolve([{id:active}]),async sendMessage(id,message){messages.push({id,...message});if(message.operation==='capture')return {context:{documentId:'document-'+id,revision:1},snapshot:{pageOrigin:'https://example.test',fields:[]}};}},windows:{onFocusChanged:event()}};
   const manager=SeeForMeSession.start(browser,{randomUUID:()=> '00000000-0000-4000-8000-'+String(uuid++).padStart(12,'0')},clock);
   async function start(id){return browser.runtime.onMessage.fn({channel:'seeforme',operation:'start',documentId:'document-'+id,context:{documentId:'document-'+id,revision:1},snapshot:{fields:[]}},{id:'extension',frameId:0,tab:{id,url:urls.get(id)},url:urls.get(id)});}
   return {start,emit:raw=>port.onMessage.fn(raw),port,browser,manager,requests,messages,timers,urls,queries,clock,
@@ -57,5 +58,13 @@ async function drain(){for(let i=0;i<15;i++)await Promise.resolve();}
   check(voiceMessages(f).length===1 && voiceMessages(f)[0].voice.seq===2,'late async routing cannot display an older state');
   const prior=voiceMessages(f).length;f.manager.dispose();await f.emit(state(3));await f.advance(15000);check(voiceMessages(f).length===prior && f.timers.size===0,'disposed background cancels voice timers and deliveries');
   f=fixture();await f.start(1);await f.emit(state(1,{ttlMs:1000}));await f.advance(900);await f.emit(state(2,{ttlMs:1000}));await f.advance(100);check(voiceMessages(f).at(-1).operation==='voice-state','real heartbeat renews activity');await f.advance(900);check(voiceMessages(f).at(-1).operation==='voice-idle','renewed state still expires');f.manager.dispose();
+  f=fixture();await f.start(1);const transcriptBaseline=f.requests.length;
+  await f.emit({v:1,type:'VOICE_TRANSCRIPT',role:'user',text:'Synthetic spoken answer'});
+  await f.emit({name:'seeforme',userInfo:{v:1,type:'VOICE_TRANSCRIPT',role:'assistant',text:'Synthetic spoken reply'}});
+  check(f.messages.filter(m=>m.operation==='transcript').length===2,'both actual speech roles reach the transcript display');
+  check(f.requests.length===transcriptBaseline,'transcript display never advances form reasoning');
+  await f.emit({v:1,type:'VOICE_TRANSCRIPT',role:'system',text:'Invalid role'});
+  await f.emit({v:1,type:'VOICE_TRANSCRIPT',role:'user',text:'x'.repeat(4001)});
+  check(f.messages.filter(m=>m.operation==='transcript').length===2,'invalid or oversized transcript events rejected');f.manager.dispose();
   print('PASS '+checks+' native voice-state assertions');
 })().catch(error=>{print('FAIL '+error.message);quit(1);});

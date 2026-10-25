@@ -265,3 +265,53 @@ The assistant automatically inspects and starts voice once when first loaded in 
 Validation: 415 JavaScript assertions and 58 native tests passed, including actual Foundation Models unsupported-action classification and the existing multilingual explanation tests. Audio capture/channel mapping, playback and form-filling code remain at the user-confirmed working baseline.
 
 Automatic-start messaging fix: the form background listener now returns synchronously for other channels. Previously its empty async Promise could claim the reply intended for the voice bridge, so a granted automatic start was never observed by the content script. Regression checks cover both automatic and manual voice message response ownership. 417 JavaScript assertions passed; no native audio or form logic changed.
+
+## Local context — revision 1.10
+
+Local context controls live in the existing panel footer. Talk/Inspect turns
+SeeForMe ON. Use the explicit ON/OFF control to end a context activation; hang-up
+and navigation preserve it. Connect Folder selects a directory with the Mac
+system picker. Refresh Context is the only way to reread the same folder while ON;
+Change Folder replaces it and Disconnect removes its remembered permission.
+
+The native host owns folder access, optional bookmark persistence and extraction. A private local
+extracted-text cache persists through process interruptions and is cleared on OFF
+or Disconnect. Original documents stay in place. Supported immediate children:
+PDF text (no OCR), UTF-8 TXT/Markdown, DOCX. Limits and transport are documented in
+PROTOCOL.md section 19. Ask explicitly, for example, “Use my context to write this
+description in French.” Unknown facts still require clarification. Filled values
+are visible to the website. Context-derived speech requires explicit ElevenLabs consent, revocable in Local context settings. Without consent, spoken replies are redacted; microphone transcription remains ElevenLabs. Original files and cached excerpts stay local.
+
+Caches live separately in the host and native extension sandboxes. The existing
+native push/message channel relays bounded snapshot chunks through the extension
+background; document text never enters tabs, DOM, browser storage, diagnostics or
+remote services. Complete snapshots commit atomically; sequence ordering rejects
+older context after OFF/Disconnect. Original signing configuration and entitlements
+are unchanged. No App Group or development-team provisioning is required.
+
+The current host has read-only picker permission but lacks
+`com.apple.security.files.bookmarks.app-scope`. It retains live folder access while
+running and restores the active extracted-text cache after interruptions. After
+the native host quits, Refresh/new activation requires reconnecting the folder to
+reread originals. The controls disclose this. Durable permission restoration can be
+enabled later with that standard bookmark entitlement; no signing change is made
+for this prototype.
+
+Focused native checks: `swift test --package-path seeforme/SeeForMeCore --filter
+LocalContextTests` and `--filter LocalContextTransferTests`. JavaScript checks remain `python3 extension/tests/run.py`.
+Real Safari picker presentation, chunk delivery through the native port, retained
+folder access across Safari restarts, cached resume across host restarts,
+cross-website ON/OFF behavior and voice integration require manual verification
+with synthetic documents.
+
+
+Bengali submission demo: the existing ElevenLabs key now authorizes a private text-only
+ElevenLabs Agent for Bengali reasoning. Scribe handles transcription and Eleven v3
+handles Bengali speech; non-Bengali speech/reasoning keeps its original providers.
+Only matching context snippets and eligible form metadata are sent, never source files
+or entire cached documents. Form values are validated and filled locally in the form's
+language. Live synthetic tests cover Bengali greeting/audio/transcription, Bengali yes,
+English/Japanese field values, name preservation and no submission. The extension's
+native target now has outgoing-network capability; signing and JavaScript permissions
+are unchanged. The private agent ID is in ElevenLabsReasoner.swift, and the key remains
+in the native Keychain. No local-model service or model download is required.

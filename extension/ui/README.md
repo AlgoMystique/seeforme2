@@ -115,3 +115,31 @@ Language and voice preferences persist in extension storage; defaults come from
 the native Mac language. The dropdown lists supported local-model/TTS language
 intersections and curated voice presets. Settings take effect on the next Talk
 start; no credentials or form answers are persisted.
+
+## Approved cloud-window design
+
+The frontend now follows the approved white-window reference: a mint avatar and
+SVG cloud, lavender Connect Context control, charcoal conversation/progress panel,
+separate charcoal voice bar, lavender Talk button, and bottom Type instead/Settings
+controls. Existing mute/hang-up controls remain available during native voice.
+Settings contains the existing privacy, language/voice and local-context interfaces.
+
+The cloud uses only validated native voice states. Listening/speaking bars follow
+native audio levels; thinking/transcribing use CSS processing dots. Idle has no
+looping animation. Reduced Motion disables motion. SVG and DOM text are local;
+there are no image services, screenshots, added dependencies or new dependencies.
+
+The black panel is a bounded, in-memory transcription log. Actual native STT and
+playback-start events provide user and assistant messages. Workflow prompts never
+become transcript bubbles. Optional typing remains in Settings for accessibility;
+the main flow never asks the user to type. Connect Context opens the system picker
+when disconnected and shows management controls when already connected. The cloud
+shows “Please connect context” and “Learning context...” around that real request.
+
+`python3 extension/ui/check_approved_design.py` checks the rendered layout in an
+isolated Safari preview window using Apple Events JavaScript (already enabled by
+the user). It measures viewport bounds, horizontal overflow, multilingual wrapping,
+cloud placement, progress and audio layout at three sizes, and exercises cloud
+presentation with explicitly synthetic native-shaped events. It takes no
+screenshots, changes no Safari preferences, starts no microphone and closes only
+its own preview window. Actual voice timing still requires a live user check.

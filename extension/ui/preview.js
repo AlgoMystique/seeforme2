@@ -5,6 +5,9 @@ const ui=SeeForMeAssistant.create(document,window,{highlightFields(ids) {
 const fields=['first','last','email'].map(id => ({id,required:true,visible:true,disabled:false,currentValuePresent:false}));
 let previewSeq=0;
 function preview(state) {
+  ui.renderContext({state:{active:true,connected:true,documentCount:1}});
+  ui.resetVisual();
+  ui.appendTranscript('assistant','Synthetic spoken preview. No microphone is running.');
   ui.clearVoiceState(true);ui.updateSnapshot({fields:fields.map((f,i) => ({...f,currentValuePresent:state === 'completed' || i === 0}))});
   const states={idle:'needs_input',listening:'needs_input',thinking:'processing',speaking:'needs_input',completed:'ready_for_review'};
   ui.renderState({state:states[state],question:state === 'completed' ? null : {text:'What’s the best email to reach you?',fieldIds:['email']},modelAvailable:true},{started:true});

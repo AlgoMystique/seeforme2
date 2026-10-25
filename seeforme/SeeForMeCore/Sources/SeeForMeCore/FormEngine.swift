@@ -4,6 +4,11 @@ import Foundation
 /// values exist only inside the reply that carries them to the extension.
 public actor FormEngine {
     struct Session {
+        var contextOffer = false
+        var contextApproved = false
+        var contextPasses = 0
+        var retrievalLabels: [String: String] = [:]
+        var contextRevision: UUID?
         var language = ConversationLanguage.system
         var formLanguage: String?
         var pageText = ""
@@ -40,6 +45,7 @@ public actor FormEngine {
     private var sessions: [String: Session] = [:]
     private let primary: any FieldExtractor
     private let fallback: any FieldExtractor
+    private let contextProvider: @Sendable () -> LocalContextSnapshot
     private let modelAvailable: @Sendable () -> Bool
 
     static let sessionLifetime: TimeInterval = 30 * 60
@@ -47,7 +53,9 @@ public actor FormEngine {
 
     public init(conversation: (any ConversationReasoner)? = nil, primary: any FieldExtractor = FoundationModelExtractor(),
                 fallback: any FieldExtractor = HeuristicExtractor(),
-                modelAvailable: @escaping @Sendable () -> Bool = { FoundationModelExtractor.isAvailable }) {
+                modelAvailable: @escaping @Sendable () -> Bool = { FoundationModelExtractor.isAvailable },
+                contextProvider: @escaping @Sendable () -> LocalContextSnapshot = { .empty }) {
+        self.contextProvider = contextProvider
         self.conversation = conversation
         self.primary = primary
         self.fallback = fallback
@@ -77,13 +85,21 @@ public actor FormEngine {
     }
 
     public func handle(_ message: InboundMessage) async -> HostReply {
+        let contextRevision = contextProvider().revision
         var reply = await process(message)
         guard let conversation, var session = sessions[message.sessionId] else { return reply }
+        if message.type == "FILL_RESULT", session.contextApproved, session.contextPasses < 2,
+           reply.status == .needsInput, message.results?.contains(where: { $0.success }) == true,
+           session.fields.values.contains(where: { $0.isFillable && $0.required && !$0.currentValuePresent && $0.kind != .checkbox }) {
+            session.contextPasses += 1
+            let continuation = await utterance("Continue filling the remaining fields using my approved context. Ask only for facts absent or conflicting in that context.", session: &session, message: message)
+            if !continuation.actions.isEmpty { reply = continuation }
+        }
         reply.conversationLanguage = session.language
         guard ConversationLanguage.supported(session.language) else {
             reply.actions = []
             reply.status = .needsInput
-            reply.question = Question(text: "This language isn't supported by the on-device model. Choose a supported conversation language in Settings.", fieldIds: [])
+            reply.question = Question(text: ConversationLanguage.name(session.language) + " conversation is not supported by this Mac’s on-device model. I have not changed your language preference or filled any fields.", fieldIds: [])
             reply.message = nil
             return reply
         }
@@ -101,6 +117,11 @@ public actor FormEngine {
                 reply.message = nil
                 reply.question = Question(text: "Translation is temporarily unavailable. Please retry or choose another language.", fieldIds: [])
             }
+        }
+        if (!reply.actions.isEmpty || reply.status == .submit), contextRevision != contextProvider().revision {
+            session.awaitingSubmitResult = false; session.prompt = .none
+            reply.actions = []; reply.status = .needsInput
+            reply.message = "Local context changed during this step. Please repeat your request."
         }
         session.question = reply.question
         if sessions[message.sessionId] != nil { sessions[message.sessionId] = session }
@@ -193,6 +214,15 @@ public actor FormEngine {
             if language != session.language { session.pendingTranslation = []; session.pendingSchema = [] }
             session.language = String(language.prefix(40))
         }
+        let local = contextProvider()
+        if local.active && local.connected && session.contextRevision != local.revision {
+            session.contextRevision = local.revision
+            session.contextOffer = !fields.isEmpty
+            session.contextApproved = false; session.contextPasses = 0
+            if let preferred = local.preferredLanguage {
+                session.language = preferred
+            }
+        }
         session.formLanguage = message.formLanguage
         session.pageText = message.pageText ?? ""
         if !session.pendingSchema.isEmpty && fields != session.pendingSchema {
@@ -208,6 +238,12 @@ public actor FormEngine {
         session.submitAvailable = message.submitAvailable ?? false
         session.lastUsed = Date()
 
+        if session.contextOffer {
+            session.question = Question(text: "Hi, I'm SeeForMe. Would you like me to fill up this form for you using your connected context?", fieldIds: [])
+            sessions[message.sessionId] = session
+            return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
+                             question: session.question, modelAvailable: modelAvailable())
+        }
         let reply = session.pendingLanguage != nil
             ? HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput, question: session.question, modelAvailable: modelAvailable())
             : session.pendingTranslation.isEmpty
@@ -218,15 +254,29 @@ public actor FormEngine {
     }
 
     private func pageExplanation(text: String, session: Session, message: InboundMessage, using reasoner: any ConversationReasoner) async throws -> String {
-        guard message.source == "voice", let id = message.utteranceId, UUID(uuidString: id) != nil else {
+        let local = contextProvider()
+        guard !(local.active && local.connected), message.source == "voice", let id = message.utteranceId, UUID(uuidString: id) != nil else {
             return try await reasoner.explainPage(text: text, page: session.pageText, language: session.language)
         }
+        let provider = contextProvider
         return try await reasoner.streamPage(text: text, page: session.pageText, language: session.language) { text, seq, final in
+            let current = provider()
+            guard !(current.active && current.connected) else { return }
             HostReplyBroadcast.postSentence(text, utteranceId: id, sequence: seq, final: final)
         }
     }
 
+    private func questionForLanguageChange(_ session: Session) -> Question {
+        Question(text: session.contextOffer ? "Hi, I'm SeeForMe. Would you like me to fill up this form for you using your connected context?" : "I will speak Bengali. How can I help with this form?", fieldIds: [])
+    }
+
     private func utterance(_ text: String, session: inout Session, message: InboundMessage) async -> HostReply {
+        // Handle explicit language requests before page explanation, even with no form.
+        if text.range(of: #"(?i)(?:কথা\s*বল[^।.!?]*বাংলা|বাংলা[^।.!?]*(?:বলো|বলুন|preferred language|prefered language)|(?:speak|talk)[^.!?]*(?:bengali|bangla))"#, options: .regularExpression) != nil {
+            session.language = "bn"
+            return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
+                             question: questionForLanguageChange(session), modelAvailable: modelAvailable())
+        }
         if session.fields.isEmpty {
             var completed = false
             var answer = "I couldn't read enough page text to explain it. Try a page with visible text."
@@ -235,6 +285,11 @@ public actor FormEngine {
                     let intent = try await conversation.decide(text: text, fields: [], question: nil, language: session.language, formLanguage: session.formLanguage)
                     if intent.intent == .unsupported {
                         answer = "Sorry, I am not authorised to do that yet. I can explain this page and help fill supported forms."
+                    } else if intent.intent == .language {
+                        if let requested = intent.language { session.language = requested }
+                        session.question = Question(text: "Conversation language: " + ConversationLanguage.name(session.language) + ".", fieldIds: [])
+                        return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
+                                         question: session.question, modelAvailable: modelAvailable())
                     } else { answer = try await pageExplanation(text: text, session: session, message: message, using: conversation) }
                     completed = true
                 }
@@ -247,6 +302,19 @@ public actor FormEngine {
         }
         // Short replies ("yes", "no", "skip", "that's all") answer the last question; they never fill fields here.
         let short = ShortReply(text)
+        var contextRequest = false
+        if session.contextOffer {
+            if short == .yes {
+                session.contextOffer = false; session.contextApproved = true; contextRequest = true
+            } else if short == .no {
+                session.contextOffer = false; session.contextApproved = false
+                return nextStep(&session, message: message, actions: [], note: "Okay. Tell me what you would like help with.")
+            } else {
+                // A substantive spoken request remains available; the reasoner still
+                // requires explicit context intent and grounded evidence.
+                session.contextOffer = false
+            }
+        }
         if let language = session.pendingLanguage {
             let original = session.pendingLanguageText
             session.pendingLanguage = nil; session.pendingLanguageText = nil
@@ -324,8 +392,22 @@ public actor FormEngine {
         let candidates = session.order.compactMap { session.fields[$0] }.filter(\.isFillable)
         if let conversation, modelAvailable() {
             do {
-                let decision = try await conversation.decide(text: text, fields: candidates, question: session.question,
-                                                             language: session.language, formLanguage: session.formLanguage)
+                let local = contextProvider()
+                if ConversationLanguage.same(session.language, "bn") {
+                    for field in candidates where !field.currentValuePresent && session.retrievalLabels[field.label] == nil {
+                        if let detected = field.language ?? session.formLanguage ?? ConversationLanguage.detect(field.label),
+                           !ConversationLanguage.same(detected, "en"), ConversationLanguage.supported(detected) {
+                            session.retrievalLabels[field.label] = (try? await LocalConversationReasoner().translate(field.label, language: "en")) ?? field.label
+                        } else { session.retrievalLabels[field.label] = field.label }
+                    }
+                }
+                let query = text + " " + candidates.filter { !$0.currentValuePresent }.map { field in
+                    (session.retrievalLabels[field.label] ?? field.label) + " " + (field.autocomplete ?? "") + " " + field.kind.rawValue + (FieldRules.isName(field) ? " name" : "") + (field.kind == .textarea ? " description professional occupation experience biography" : "")
+                }.joined(separator: " ")
+                let excerpt = ConversationLanguage.same(session.language, "bn") ? local.relevantExcerpt(query: query) : local.excerpt(query: query)
+                let decision = try await conversation.decide(text: contextRequest ? "Use my connected local context to fill this form in the form language. Preserve original names and identifiers." : text, fields: candidates, question: session.question,
+                                                             language: session.language, formLanguage: session.formLanguage, context: excerpt, contextAuthorized: session.contextApproved)
+                let evidence = decision.usedContext ? text + "\n" + excerpt : text
                 if [.help, .explain].contains(decision.intent), text.count >= 8,
                    let detected = ConversationLanguage.detect(text),
                    !ConversationLanguage.same(detected, session.language),
@@ -368,16 +450,18 @@ public actor FormEngine {
                 for value in decision.values {
                     guard seen.insert(value.fieldId).inserted,
                           !value.source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                          text.localizedCaseInsensitiveContains(value.source),
+                          evidence.localizedCaseInsensitiveContains(value.source),
                           let field = session.fields[value.fieldId], field.isFillable,
                           !field.currentValuePresent || session.filledByUs.contains(field.id),
                           let normalized = FieldRules.normalize(value.value, for: field) else { continue }
-                    if message.source == "voice", FieldRules.isName(field),
+                    if message.source == "voice", text.localizedCaseInsensitiveContains(value.source), FieldRules.isName(field),
                        FieldRules.nameNeedsSpellingConfirmation(normalized, conversationLanguage: session.language) {
                         needsNameSpelling = true
                         continue
                     }
-                    if FieldRules.isGrounded(normalized, field: field, utterance: text,
+                    // Documents cannot supply checkbox consent. Identity values still require exact grounding.
+                    if field.kind == .checkbox && !text.localizedCaseInsensitiveContains(value.source) { continue }
+                    if FieldRules.isGrounded(normalized, field: field, utterance: evidence,
                                             isTargeted: session.question?.fieldIds.contains(field.id) == true) {
                         if message.source == "voice", field.kind == .email {
                             translated.append(FillAction(fieldId: field.id, value: normalized,
@@ -393,9 +477,9 @@ public actor FormEngine {
                 }
                 if needsNameSpelling {
                     return nextStep(&session, message: message, actions: [],
-                        note: "I may have misheard the spelling of your name. Please say its spelling in a full sentence, or type your original/legal spelling. I will keep that spelling rather than translate your name.")
+                        note: "I may have misheard the spelling of your name. Please spell your original or legal name aloud. I will keep that spelling rather than translate your name.")
                 }
-                let actions = validate(direct, utterance: text, session: session)
+                let actions = validate(direct, utterance: evidence, session: session)
                 if !translated.isEmpty {
                     if (actions + translated).reduce(0, { $0 + $1.value.count + (session.fields[$1.fieldId]?.label.count ?? 0) }) > 450 {
                         return nextStep(&session, message: message, actions: [], note: "Please give one shorter answer at a time so I can translate it accurately.")
@@ -404,8 +488,8 @@ public actor FormEngine {
                 }
                 return nextStep(&session, message: message, actions: actions,
                                 note: actions.isEmpty ? (targeted.contains(where: { $0.kind == .email })
-                                    ? "I couldn't verify the exact email address. Please say every dot, at sign or underscore, or type it. I won't guess missing characters."
-                                    : "I couldn't verify that answer. Please spell the detail or type its exact wording.") : nil)
+                                    ? "I couldn't verify the exact email address. Please say every dot, at sign or underscore, and I will read it back. I won't guess missing characters."
+                                    : "I couldn't verify that answer. Please spell the detail aloud.") : nil)
             } catch {
                 return HostReply(sessionId: message.sessionId, requestId: message.requestId, status: .needsInput,
                                  question: session.question, message: "I couldn't interpret that safely. Please try again; no fields were changed.",

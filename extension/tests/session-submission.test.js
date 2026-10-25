@@ -11,6 +11,7 @@ function fixture(options={}) {
   const reply=(req,fields) => ({v:1,type:'HOST_REPLY',sessionId:req.sessionId,requestId:req.requestId,modelAvailable:true,actions:[],...fields});
   const review={status:'ready_for_review',question:{text:'Would you like me to submit it now?',fieldIds:[]}};
   const browser={runtime:{id:'extension',onMessage:event(),connectNative:() => port,async sendNativeMessage(app,req) {
+if (req.type === 'LOCAL_CONTEXT') return {v:1,type:'CONTEXT_STATE',requestId:req.requestId,ok:true,state:{active:true,connected:false}};
     check(SeeForMeProtocol.request(req),'valid outbound message');requests.push(req);
     if (hold === req.type) {hold=null;await new Promise(resolve => release=resolve);}
     if (req.type === 'FORM_SNAPSHOT') return reply(req,options.snapshotReply || review);
